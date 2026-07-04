@@ -12,6 +12,7 @@ def _stable_id(doc, index:int) -> str:
     an id per vector on write — this just guarantees the same source chunk
     gets the same id across rebuilds, which is handy for debugging/logs
     even though the clear step means duplicates were never the risk here.
+    
     """
 
     source = doc.metadata.get("source", "unknown")

@@ -61,10 +61,7 @@ class SupervisorOutput(BaseModel):
 
 structured_llm = llm.with_structured_output(SupervisorOutput, include_raw=True)
 
-# Running counters, logged on every call so you can see the split between
-# calls that never hit the API, calls that hit it but were cache-discounted,
-# and calls that paid full price. Not persisted — resets on process restart;
-# swap for a proper metrics backend if you need it across restarts.
+
 _call_stats = {"fast_path": 0, "llm_call": 0, "cached_tokens_total": 0, "prompt_tokens_total": 0}
 
 
@@ -107,21 +104,15 @@ def _log_llm_usage(response) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# PROMPT CACHING: this block is split in two on purpose.
-#
-# STATIC_INSTRUCTIONS never changes — no {placeholders}, byte-for-byte
-# identical on every call, forever. OpenAI's prompt cache recognizes it after
-# the first call and charges roughly half price for it on every call after
-# that (Anthropic/Claude models cache automatically the same way; OpenAI
-# needs the identical prefix to repeat, which this guarantees).
-#
-# DYNAMIC_CONTEXT_TEMPLATE holds everything that changes turn-to-turn (prev
-# state, today's date, recent history). It's small (~100 tokens) and always
-# billed at full price, but it's cheap precisely because we kept it separate
-# from the ~1000-token static block instead of gluing them into one string.
-# ---------------------------------------------------------------------------
+''' PROMPT CACHING: this block is split in two on purpose.
 
+- STATIC_INSTRUCTIONS never changes — no {placeholders}, byte-for-byte
+- identical on every call, forever. OpenAI's prompt cache recognizes it after
+- the first call and charges roughly half price for it on every call after
+
+- DYNAMIC_CONTEXT_TEMPLATE holds everything that changes turn-to-turn (prev
+  state, today's date, recent history). 
+'''
 STATIC_INSTRUCTIONS = """
 You are a dental clinic appointment supervisor. Extract intent and fields from the user message.
 The model backing you is capable of reasoning — apply the rules below with judgment, not literal pattern-matching.
@@ -258,16 +249,8 @@ async def supervisor_node(state: GraphState) -> dict:
     logger.info("Supervisor processing message: %s", state.user_message)
     today_date = date.today()
 
-    # -----------------------------------------------------------------
     # FAST PATH — zero LLM calls, zero tokens.
-    # A bare "ok"/"yes" confirming a doctor we already suggested, or a
-    # bare "no"/"cancel that", is fully deterministic. The resolution
-    # logic already exists further down (it used to run AFTER the LLM
-    # call) — running it here means we never make the API request at
-    # all for these turns, instead of just getting it cheaper via
-    # caching. This is the biggest lever: a skipped call costs $0,
-    # a cached call still costs ~half price.
-    # -----------------------------------------------------------------
+    # A bare "ok"/"yes" confirming a doctor we already suggested, or a bare "no"/"cancel that", is fully deterministic. 
     if _AFFIRMATIVE_PATTERN.match(state.user_message) and state.suggested_alternative:
         logger.info(
             "Fast-path: affirmative confirmation of suggested_alternative=%r — skipping LLM call.",
@@ -311,9 +294,7 @@ async def supervisor_node(state: GraphState) -> dict:
             "response_message": "No problem — that's been cancelled. Let me know if there's anything else I can help with.",
         }
 
-    # -----------------------------------------------------------------
-    # Normal path — message actually needs interpretation, call the LLM.
-    # -----------------------------------------------------------------
+    # Normal path
     today = today_date.isoformat()
     today_weekday = today_date.strftime("%A")
 
@@ -469,15 +450,7 @@ async def supervisor_node(state: GraphState) -> dict:
             )
             resolved_appointment_date = corrected_date
 
-    # A NEW date given this turn (explicit or relative) must not be silently
-    # paired with a stale carried-over time from a previous slot — that
-    # produces impossible combinations (e.g. a fresh "Saturday" inheriting
-    # the old booking's 09:00, when the alternative doctor for Saturday only
-    # opens at 10:00), which surfaces as a false "no one is free" instead of
-    # asking for a time. Only carry the old time forward when the date is
-    # ALSO unchanged this turn (i.e. the user said "same date/time" or
-    # nothing about either) — that's the one case where reusing Previous
-    # State's time is actually intended.
+
     new_date_given_this_turn = bool(resolved_relative_date) or parsed.get("appointment_date") is not None
     if new_date_given_this_turn:
         resolved_appointment_time = parsed.get("appointment_time")
@@ -501,7 +474,7 @@ async def supervisor_node(state: GraphState) -> dict:
     }
 
     if resolved_intent is None:
-        fallback_response = parsed.get("fallback_response")
+        fallback_response = parsed.get("fallback_response ")
         if fallback_response:
             result["response_message"] = fallback_response
 

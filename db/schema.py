@@ -58,4 +58,4 @@ async def _seed_doctors(db):
         "INSERT INTO doctors (name, specialization, available_days, start_time, end_time) VALUES (?, ?, ?, ?, ?)",
         doctors
     )
-    logger.info("Seeded %d doctors.", len(doctors))
+    logger.info("Seeded %d doctors. ", len(doctors))

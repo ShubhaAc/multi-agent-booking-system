@@ -121,31 +121,19 @@ async def _resolve_specialization(state: GraphState, fallback_doctor_name: str |
     return None
 
 
-# "I don't care which doctor" phrasing — recognized directly off the raw
-# user message so scheduling_node can act on it the turn it's said, rather
-# than needing a new state field to distinguish "never answered yet" from
-# "explicitly said no preference" (both look like doctor_name=None).
+
 _ANY_DOCTOR_PATTERN = re.compile(
     r"^\s*(whoever'?s? (is )?free|any(one|body)?( doctor)?|no preference|"
     r"doesn'?t matter|don'?t (know|mind|care)|dont know|dunno|first available)\s*[!.]*\s*$",
     re.IGNORECASE,
 )
 
-# Phrasing that signals "I want a DIFFERENT doctor" without naming one, e.g.
-# "another doctor", "someone else", "switch doctors". This is broader than
-# _ANY_DOCTOR_PATTERN (which only matches "I have no preference at all"
-# phrasing) and needs to be matched too — otherwise "another doctor is
-# there?" falls through to a generic "which doctor would you like?" prompt
-# instead of proactively searching for and explaining an alternative. Kept
-# in sync with the same pattern in supervisor.py, which uses it to decide
-# whether a CLEAR doctor_name sentinel is genuine.
 _DOCTOR_CHANGE_SIGNAL_PATTERN = re.compile(
     r"\b(another|different|someone else|switch|change (my |the )?doctor|new doctor)\b",
     re.IGNORECASE,
 )
 
-# Same pattern as supervisor.py's _AFFIRMATIVE_PATTERN. Used here to gate
-# the reschedule confirmation step below — kept in sync manually.
+
 _AFFIRMATIVE_PATTERN = re.compile(
     r'^\s*(ok(ay)?|yes|yeah|yep|sure|go ahead|sounds good|confirm(ed)?)\s*[!.]*\s*$',
     re.IGNORECASE,
@@ -155,7 +143,7 @@ _AFFIRMATIVE_PATTERN = re.compile(
 async def scheduling_node(state: GraphState) -> dict:
     logger.info("Scheduling agent started.")
 
-    # ── RESCHEDULE ──────────────────────────────────────────────────────────
+    # ── RESCHEDULE 
     if state.intent == "reschedule":
 
         if not state.appointment_id:
@@ -167,11 +155,7 @@ async def scheduling_node(state: GraphState) -> dict:
                 "response_message": "I need to verify your identity before rescheduling. Could you share the email you used when booking?",
             }
 
-        # Fetched once up front (rather than only after doctor_name is
-        # resolved) so BOTH the "no doctor named yet" branch and the
-        # same-slot guard below can use it — this also lets us derive the
-        # original doctor's specialization when the patient hasn't restated
-        # a reason for visit this conversation (see _resolve_specialization).
+
         existing_appt = await db_get_appointment_by_id(state.appointment_id)
         if not existing_appt:
             return {"response_message": f"I couldn't find an appointment with ID {state.appointment_id}. Please double-check the ID."}
@@ -194,11 +178,7 @@ async def scheduling_node(state: GraphState) -> dict:
                 or _DOCTOR_CHANGE_SIGNAL_PATTERN.search(state.user_message)
             )
             if wants_different_doctor:
-                # User explicitly said they don't care who, or asked for a
-                # different doctor without naming one — don't re-ask the
-                # same question forever. Search for an available doctor
-                # matching the original specialty/reason right now, instead
-                # of requiring a name.
+     
                 specialization_needed = await _resolve_specialization(state, existing_appt["doctor_name"])
                 candidate_names = None
                 if specialization_needed:
@@ -252,11 +232,7 @@ async def scheduling_node(state: GraphState) -> dict:
                 "response_message": "Which doctor would you like to reschedule with? I can keep the same one or find someone new if you prefer.",
             }
 
-        # ── GUARD: refuse to "reschedule" onto the appointment's current slot ──
-        # state.appointment_date/time/doctor_name may simply be carried-over
-        # values describing the EXISTING booking (they're sticky across turns),
-        # not a new slot the user actually asked for. Compare against the real
-        # row before touching the DB or sending any email.
+
         if (
             state.appointment_date == existing_appt["appointment_date"]
             and state.appointment_time == existing_appt["appointment_time"]
@@ -274,14 +250,7 @@ async def scheduling_node(state: GraphState) -> dict:
 
         specialization_needed = await _resolve_specialization(state, existing_appt["doctor_name"])
 
-        # ── WEEKDAY GUARD: check the doctor's working days BEFORE the generic ──
-        # slot-availability check. db_check_excluding conflates "wrong weekday"
-        # and "double-booked" into a single False, which produces a vague
-        # "isn't available" message even when the real reason is that the
-        # doctor simply doesn't work that day. Checking this separately lets
-        # us tell the user exactly why, mirroring booking_agent.py's Phase 3
-        # day-matching messaging instead of leaving them to guess and repeat
-        # the same invalid day.
+
         schedule = await db_get_doctor_schedule(state.doctor_name)
         if schedule:
             weekday = datetime.strptime(state.appointment_date, "%Y-%m-%d").strftime("%A")
@@ -339,11 +308,7 @@ async def scheduling_node(state: GraphState) -> dict:
 
         if not available:
             # Restrict alternatives to the same specialty as the original
-            # booking, mirroring booking_agent.py's candidate_names pattern.
-            # Without this, find_alternative_doctor() falls back to searching
-            # ALL doctors, which can surface a clinically-mismatched
-            # specialist (e.g. a Periodontist offered in place of a General
-            # Dentistry appointment).
+      
             candidate_names = None
             if specialization_needed:
                 same_specialty = await db_get_doctors_by_specialization([specialization_needed])
@@ -381,17 +346,7 @@ async def scheduling_node(state: GraphState) -> dict:
                 "response_message": f"{base} No other doctors are free then either. Could you try a different date or time?",
             }
 
-        # ── CONFIRM BEFORE COMMITTING ────────────────────────────────────────
-        # Previously this jumped straight to db_reschedule the moment the slot
-        # was free — no "shall I go ahead?" step, unlike the booking flow.
-        # Mirror booking_agent.py's Phase 3 pattern: the FIRST time we find
-        # this doctor free at this new date/time, ask before touching the DB.
-        # Only proceed once the user's CURRENT message is itself a bare
-        # affirmative ("yes"/"ok"/"go ahead") — which is exactly the reply to
-        # that question. supervisor.py's fast path already resolves the
-        # doctor/date/time correctly on that "yes" turn without an LLM call,
-        # so this check is enough to distinguish "just told you the new slot"
-        # from "confirming the slot you already showed me".
+        # CONFIRM BEFORE COMMITTING 
         if not _AFFIRMATIVE_PATTERN.match(state.user_message):
             return {
                 "appointment_id": state.appointment_id,
@@ -453,7 +408,7 @@ async def scheduling_node(state: GraphState) -> dict:
             "intent": None,
         }
 
-    # ── CHECK AVAILABILITY ───────────────────────────────────────────────────
+    #  CHECK AVAILABILITY 
     elif state.intent == "check_availability":
 
         if not state.doctor_name:
@@ -469,7 +424,6 @@ async def scheduling_node(state: GraphState) -> dict:
             weekday = datetime.strptime(state.appointment_date, "%Y-%m-%d").strftime("%A")
 
             if not state.appointment_time:
-                # Broad query ("who's free Saturday?") — match by working day only
                 free_that_day = []
                 for doctor in doctor_names:
                     schedule = await db_get_doctor_schedule(doctor)
@@ -486,7 +440,7 @@ async def scheduling_node(state: GraphState) -> dict:
                     available.append(doctor)
 
             if available:
-                return {"response_message": f"The following doctors are available on {state.appointment_date} at {state.appointment_time}: {', '.join(available)}."}
+                return {"response_message ": f"The following doctors are available on {state.appointment_date} at {state.appointment_time}: {', '.join(available)}."}
             return {"response_message": f"No doctors are available on {state.appointment_date} at {state.appointment_time} for {state.specialization_needed or 'your reason'}."}
 
         schedule = await db_get_doctor_schedule(state.doctor_name)
@@ -512,7 +466,7 @@ async def scheduling_node(state: GraphState) -> dict:
             return {"response_message": f"{state.doctor_name} is available on {state.appointment_date} at {state.appointment_time}."}
         return {"response_message": f"{state.doctor_name} is not available on {state.appointment_date} at {state.appointment_time}."}
 
-    # ── FALLBACK ─────────────────────────────────────────────────────────────
+    #  FALLBACK 
     else:
         if not state.doctor_name or not state.appointment_date or not state.appointment_time:
             return {"response_message": "Please specify the doctor, date, and time so I can find an alternative."}

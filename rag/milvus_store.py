@@ -15,6 +15,7 @@ _patched = False
 
 def _ensure_connection():
     """
+    
     Guarantee a live, freshly-connected handler under _ALIAS in the legacy
     ORM registry, and make sure the pymilvus/langchain-milvus compatibility
     patch below is installed exactly once.

@@ -66,7 +66,7 @@ async def check_doctor_availability_excluding(
         logger.warning("Invalid appointment_date received: %r", appointment_date)
         return False
     if not _is_valid_time_format(appointment_time):
-        logger.warning("Invalid appointment_time received: %r", appointment_time)
+        logger.warning("Invalid appointment_time received : %r", appointment_time)
         return False
 
     async with aiosqlite.connect(DB_PATH) as db:

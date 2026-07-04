@@ -207,7 +207,6 @@ async def reset_conversation(sender_id: str):
     return {"status": "ok", "message": f"Conversation reset for {sender_id}"}
 
 
-# Backend name -> the module-level function that clears that backend's
 # existing index and re-ingests data/*.md fresh (see rag/*_store.py).
 _VECTOR_STORE_UPSERT = {
     "chroma": upsert_chroma,

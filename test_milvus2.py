@@ -10,15 +10,8 @@ from langchain_milvus import Milvus
 from langchain_openai import OpenAIEmbeddings
 from langchain_core.documents import Document
 
-# One guaranteed-real handler, registered under "default".
 connections.connect(alias="default", uri=MILVUS_URI)
 
-# langchain_milvus's internal MilvusClient generates its own alias
-# (e.g. "cm-...") but never registers it in the legacy ORM registry
-# that Collection()/_fetch_handler read from - a known gap between
-# MilvusClient and the ORM API (pymilvus-io/pymilvus#1643). Patch the
-# lookup to fall back to our pre-connected "default" handler whenever
-# the specific alias isn't found there.
 _original_fetch_handler = _orm_conn.Connections._fetch_handler
 
 def _patched_fetch_handler(self, alias):

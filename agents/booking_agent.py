@@ -17,9 +17,7 @@ from config import MODEL_NAME
 logger = logging.getLogger(__name__)
 llm = ChatOpenAI(model=MODEL_NAME, temperature=0)
 
-# Same pattern as supervisor.py's _AFFIRMATIVE_PATTERN / scheduling_agent.py's
-# copy. Used below to gate Phase 5's booking confirmation — kept in sync
-# manually across the three files.
+
 _AFFIRMATIVE_PATTERN = re.compile(
     r'^\s*(ok(ay)?|yes|yeah|yep|sure|go ahead|sounds good|confirm(ed)?)\s*[!.]*\s*$',
     re.IGNORECASE,
@@ -39,6 +37,7 @@ REASON_MENU = (
     "11. Crowns / Bridges / Dentures\n"
     "12. Emergency\n"
     "13. Other (describe briefly)"
+    
 )
 
 REASON_TO_SPECIALIZATIONS = {
@@ -151,7 +150,7 @@ async def booking_node(state: GraphState) -> dict:
             return {"response_message": "I couldn't find a specialist matching that reason — could you tell me a bit more about what's going on?"}
 
 
-        # agents/booking_agent.py — Phase 3 date-aware selection (replaces the day_matches block)
+        # date-aware selection 
         if not state.appointment_date:
             response = await _recommend_doctors_response(state)
             logger.info("Booking recommendation response: %s", response)
@@ -250,16 +249,7 @@ async def booking_node(state: GraphState) -> dict:
             return {"response_message": f"{base} {explanation}"}
         return {"response_message": f"{base} Could you try a different date or time?"}
 
-    # ── CONFIRM BEFORE COMMITTING ────────────────────────────────────────────
-    # Previously this jumped straight to db_create_appointment the moment a
-    # slot checked out free — no "shall I go ahead?" step, even when the
-    # doctor/date/time were resolved implicitly (e.g. the model inferring
-    # doctor_name from a single earlier recommendation) rather than through
-    # an explicit user confirmation. Only proceed once the CURRENT message is
-    # itself a bare affirmative ("yes"/"ok"/"go ahead") — supervisor.py's
-    # fast path already resolves everything correctly on that "yes" turn
-    # without an LLM call, so this check alone is enough to distinguish
-    # "just told you a new slot" from "confirming the slot you showed me".
+
     if not _AFFIRMATIVE_PATTERN.match(state.user_message):
         return {
             "response_message": (

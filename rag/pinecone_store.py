@@ -35,11 +35,9 @@ def upsert_pinecone():
     index = pc.Index(PINECONE_INDEX_NAME)
     try:
         index.delete(delete_all=True)
-        logger.info("Cleared all existing vectors from Pinecone index '%s'.", PINECONE_INDEX_NAME)
+        logger.info("Cleared all existing  vectors from Pinecone index '%s'.", PINECONE_INDEX_NAME)
     except Exception as e:
-        # Pinecone raises a 404-style error if the namespace has never had
-        # any vectors written to it yet (nothing to delete) — safe to
-        # ignore and proceed straight to ingesting.
+       
         logger.info("Nothing to clear in Pinecone index '%s' (%s).", PINECONE_INDEX_NAME, e)
 
     PineconeVectorStore.from_documents(

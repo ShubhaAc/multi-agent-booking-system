@@ -48,7 +48,7 @@ async def cancellation_node(state: GraphState) -> dict:
             "booking_time": appt["appointment_time"],
             "appointment_id": state.appointment_id,
         })
-        logger.info("Cancellation email sent to %s", appt["patient_email"])
+        logger.info("Cancellation email  sent to %s", appt["patient_email"])
         email_note = f" A cancellation confirmation has been sent to {appt['patient_email']}."
     except Exception as e:
         logger.error("Failed to send cancellation email: %s", e)

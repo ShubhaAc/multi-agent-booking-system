@@ -11,18 +11,10 @@ from config import MODEL_NAME, FAQ_EMBEDDING_MODEL, FAQ_SIMILARITY_THRESHOLD, FA
 
 logger = logging.getLogger(__name__)
 
-# Reduced to 256 dims (OpenAI v3 embedding models support a `dimensions`
-# override) — keeps each cached entry small since the whole FAQ index is
-# stored as one JSON blob in Redis, while still being plenty for matching
-# short clinic-FAQ questions by meaning.
+# Reduced to 256 dims (OpenAI v3 embedding model)
 _embeddings = OpenAIEmbeddings(model=FAQ_EMBEDDING_MODEL, dimensions=256)
 
-# Questions referencing the asker's own state ("my appointment", "am I
-# booked", "what's my doctor") must never be served from — or written to —
-# the shared FAQ cache, since the correct answer is different per user.
-# Anything that doesn't match this is treated as a generic, clinic-wide
-# question (hours, insurance, pricing, parking, services) that's safe and
-# valuable to cache across ALL users, regardless of exact phrasing.
+
 _PERSONAL_PRONOUN_RE = re.compile(r"\b(my|i'?m|i|mine|our|we|me|myself)\b", re.IGNORECASE)
 
 
@@ -134,6 +126,7 @@ async def knowledge_node(state: GraphState) -> dict:
 You are a helpful dental clinic assistant. Answer using the context and known details below.
 Resolve "this/it/my doctor/my name" using Known Details or Recent Conversation before saying you don't know.
 
+                                            
 Context:
 {context}
 

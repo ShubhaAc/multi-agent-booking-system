@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 def get_chroma_retriever():
     embeddings = OpenAIEmbeddings()
     if os.path.exists(CHROMA_PERSIST_DIR) and os.listdir(CHROMA_PERSIST_DIR):
-        logger.info("Loading existing Chroma index.")
+        logger.info("Loading existing Chroma  index.")
         vectorstore = Chroma(persist_directory=CHROMA_PERSIST_DIR, embedding_function=embeddings)
     else:
         logger.info("Building new Chroma index.")
