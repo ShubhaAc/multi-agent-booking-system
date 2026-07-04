@@ -1,34 +1,37 @@
-import asyncio
 import logging
-from dotenv import load_dotenv
-from db.schema import init_db
-from graph import build_graph
-from state import GraphState
-import os
+import uvicorn
+from opik.integrations.langchain import OpikTracer
 
-load_dotenv()
+opik_tracer = OpikTracer()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(name)s | %(levelname)s | %(message)s"
-)
+# Logging is configured in api.py (force=True, runs first in the actual
+# worker process) — not here. See the comment at the top of api.py for why.
+logging.getLogger("watchfiles").setLevel(logging.WARNING)
 
-logger = logging.getLogger(__name__)
-
-async def main():
-    await init_db()
-    graph = build_graph()
-    logger.info("Booking system ready.")
-
-    while True:
-      user_input = input("\nYou: ").strip()
-      if user_input.lower() in ("exit", "quit"):
-          print("Goodbye!")
-          break
-      
-      initial_state = GraphState(user_message=user_input, booked_by="user@company.com")
-      result = await graph.ainvoke(initial_state)
-      print(f"\nBot: {result['response_message']}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    uvicorn.run(
+        "api:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        # Broad, defensive excludes. SQLite WAL mode writes *.db-wal / *.db-shm
+        # / *.db-journal continuously — those (not the .db file itself) were
+        # the actual cause of the endless "1 change detected" reload loop.
+        # "**/" prefix is needed so patterns match files inside subfolders too,
+        # not just the project root.
+        reload_excludes=[
+            "*.log", "**/*.log",
+            "*.config", "**/*.config",
+            "*.db", "**/*.db",
+            "*.db-wal", "**/*.db-wal",
+            "*.db-shm", "**/*.db-shm",
+            "*.db-journal", "**/*.db-journal",
+            "chroma_db/*", "**/chroma_db/*",
+            "*.sqlite", "**/*.sqlite",
+            "__pycache__/*", "**/__pycache__/*",
+            ".opik*/*", "**/.opik*/*",
+            "frontend/*", "**/frontend/**",
+
+        ],
+    )

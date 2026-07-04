@@ -1,0 +1,4779 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.gitignore
+.watchfilesignore
+agents/__init__.py
+agents/booking_agent.py
+agents/cancellation_agent.py
+agents/knowledge_agent.py
+agents/scheduling_agent.py
+agents/supervisor.py
+api.py
+check_db.py
+config.py
+data/clinic_info.md
+data/doctors.md
+data/faq.md
+data/pricing.md
+data/services.md
+db/__init__.py
+db/queries.py
+db/schema.py
+frontend/.gitignore
+frontend/eslint.config.js
+frontend/index.html
+frontend/package.json
+frontend/public/vite.svg
+frontend/README.md
+frontend/src/api/chatApi.js
+frontend/src/App.css
+frontend/src/App.jsx
+frontend/src/components/ChatWindow.jsx
+frontend/src/components/MessageBubble.jsx
+frontend/src/components/MessageInput.jsx
+frontend/src/components/TypingIndicator.jsx
+frontend/src/config.js
+frontend/src/hooks/useChat.js
+frontend/src/index.css
+frontend/src/main.jsx
+frontend/vite.config.js
+graph.png
+graph.py
+ingest_pinecone.py
+main.py
+rag/__init__.py
+rag/chroma_store.py
+rag/ingest.py
+rag/milvus_store.py
+rag/pinecone_store.py
+rag/upsert.py
+requirements.txt
+save_graph.py
+state/__init__.py
+state/graph_state.py
+store/__init__.py
+store/redis_store.py
+test_milvus2.py
+tests/__init__.py
+tools/__init__.py
+tools/booking_tools.py
+tools/cancellation_tools.py
+tools/email_sender.py
+tools/reschedule_tools.py
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path=".watchfilesignore">
+*.log
+*.config
+*.db
+chroma_db/
+__pycache__/
+*.pyc
+</file>
+
+<file path="agents/knowledge_agent.py">
+import logging
+import math
+import re
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from state import GraphState
+from rag import get_chroma_retriever, get_pinecone_retriever
+from store import get_faq_index, add_faq_entry
+from config import MODEL_NAME, FAQ_EMBEDDING_MODEL, FAQ_SIMILARITY_THRESHOLD, FAQ_INDEX_MAX_ENTRIES
+
+logger = logging.getLogger(__name__)
+
+# Reduced to 256 dims (OpenAI v3 embedding models support a `dimensions`
+# override) — keeps each cached entry small since the whole FAQ index is
+# stored as one JSON blob in Redis, while still being plenty for matching
+# short clinic-FAQ questions by meaning.
+_embeddings = OpenAIEmbeddings(model=FAQ_EMBEDDING_MODEL, dimensions=256)
+
+# Questions referencing the asker's own state ("my appointment", "am I
+# booked", "what's my doctor") must never be served from — or written to —
+# the shared FAQ cache, since the correct answer is different per user.
+# Anything that doesn't match this is treated as a generic, clinic-wide
+# question (hours, insurance, pricing, parking, services) that's safe and
+# valuable to cache across ALL users, regardless of exact phrasing.
+_PERSONAL_PRONOUN_RE = re.compile(r"\b(my|i'?m|i|mine|our|we|me|myself)\b", re.IGNORECASE)
+
+
+def _is_cacheable(question: str) -> bool:
+    return not _PERSONAL_PRONOUN_RE.search(question)
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+async def _semantic_cache_lookup(question: str) -> str | None:
+    """Embed the question and compare it against every cached FAQ entry by
+    cosine similarity. This is what actually handles "what services do you
+    provide" vs "what are the services" vs "what do you offer" — an exact or
+    normalized string match would treat those as three different questions
+    and miss the cache every time; embeddings put them close together in
+    vector space regardless of exact wording."""
+    index = await get_faq_index()
+    if not index:
+        return None
+
+    query_embedding = await _embeddings.aembed_query(question)
+
+    best_score, best_answer, best_question = 0.0, None, None
+    for entry in index:
+        score = _cosine_similarity(query_embedding, entry["embedding"])
+        if score > best_score:
+            best_score, best_answer, best_question = score, entry["answer"], entry["question"]
+
+    if best_score >= FAQ_SIMILARITY_THRESHOLD:
+        logger.info(
+            "FAQ semantic cache HIT (score=%.3f >= %.2f): %r matched cached %r",
+            best_score, FAQ_SIMILARITY_THRESHOLD, question, best_question,
+        )
+        return best_answer
+
+    logger.info(
+        "FAQ semantic cache MISS (best score=%.3f < %.2f, closest was %r)",
+        best_score, FAQ_SIMILARITY_THRESHOLD, best_question,
+    )
+    return None
+
+
+def format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
+
+
+def _known_context(state: GraphState) -> str:
+    """Known booking fields, compact form, so follow-ups like "price for this",
+    "my doctor", or "what's my name" resolve without the user repeating
+    themselves. patient_name/phone/email were missing here before — the
+    knowledge agent had no way to answer identity questions even though
+    that data was already sitting in state."""
+    fields = [
+        state.patient_name and f"patient_name={state.patient_name}",
+        state.phone_number and f"phone_number={state.phone_number}",
+        state.invitee_email and f"email={state.invitee_email}",
+        state.doctor_name and f"doctor={state.doctor_name}",
+        state.reason_for_visit and f"reason={state.reason_for_visit}",
+        state.specialization_needed and f"specialization={state.specialization_needed}",
+        state.appointment_date and f"date={state.appointment_date}",
+        state.appointment_time and f"time={state.appointment_time}",
+        state.appointment_id and f"appointment_id={state.appointment_id}",
+    ]
+    known = [f for f in fields if f]
+    return ", ".join(known) if known else "none yet"
+
+
+def _recent_history(state: GraphState, limit: int = 4) -> str:
+    recent = state.history[-limit:] if len(state.history) > limit else state.history
+    if not recent:
+        return "none"
+    return "\n".join(f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}" for m in recent)
+
+
+async def knowledge_node(state: GraphState) -> dict:
+    logger.info("Knowledge agent started.")
+
+    cacheable = _is_cacheable(state.user_message)
+    if cacheable:
+        cached = await _semantic_cache_lookup(state.user_message)
+        if cached:
+            return {"response_message": cached}
+
+    if state.vector_store == "pinecone":
+        logger.info("Using Pinecone retriever.")
+        retriever = get_pinecone_retriever()
+    else:
+        logger.info("Using Chroma retriever.")
+        retriever = get_chroma_retriever()
+
+    known_context = _known_context(state)
+    recent_history = _recent_history(state)
+
+    retrieval_query = " ".join(
+        p for p in (state.user_message, state.doctor_name, state.reason_for_visit) if p
+    )
+    docs = await retriever.ainvoke(retrieval_query)
+    context = format_docs(docs)
+
+    llm = ChatOpenAI(model=MODEL_NAME, temperature=0)
+    prompt = ChatPromptTemplate.from_template("""
+You are a helpful dental clinic assistant. Answer using the context and known details below.
+Resolve "this/it/my doctor/my name" using Known Details or Recent Conversation before saying you don't know.
+
+Context:
+{context}
+
+Known Details: {known_context}
+Recent Conversation:
+{recent_history}
+
+Question: {question}
+""")
+    chain = prompt | llm | StrOutputParser()
+    response = await chain.ainvoke({
+        "context": context,
+        "known_context": known_context,
+        "recent_history": recent_history,
+        "question": state.user_message,
+    })
+
+    logger.info("Knowledge agent response: %s", response)
+
+    if cacheable:
+        answer_embedding = await _embeddings.aembed_query(state.user_message)
+        await add_faq_entry(state.user_message, response, answer_embedding, FAQ_INDEX_MAX_ENTRIES)
+
+    return {"response_message": response}
+</file>
+
+<file path="check_db.py">
+import sqlite3
+from config import DB_PATH
+
+con = sqlite3.connect(DB_PATH)
+rows = con.execute("""
+    SELECT a.id, a.appointment_date, a.appointment_time, a.duration_minutes, 
+           a.status, d.name, a.patient_name, a.patient_email, 
+           a.phone_number, a.reason_for_visit
+    FROM appointments a
+    JOIN doctors d ON a.doctor_id = d.id
+    ORDER BY a.id
+""").fetchall()
+for row in rows:
+    print(row)
+</file>
+
+<file path="data/clinic_info.md">
+# Clinic Information
+
+**Name:** BrightSmile Dental Clinic  
+**Address:** 42 Molar Street, Suite 101, Healthtown, HT 10001  
+**Phone:** +1 (800) 555-2368  
+**Email:** contact@brightsmile.clinic  
+**Website:** www.brightsmile.clinic  
+
+## Opening Hours
+| Day | Hours |
+|-----|-------|
+| Monday – Friday | 8:00 AM – 7:00 PM |
+| Saturday | 9:00 AM – 5:00 PM |
+| Sunday | Closed |
+
+We are closed on all public holidays. Emergency contacts are available 24/7 via our hotline.
+</file>
+
+<file path="data/doctors.md">
+# Doctor Profiles
+
+## Dr. Ananya Sharma — General Dentist
+**Specialization:** General & Preventive Dentistry  
+**Experience:** 12 years  
+**Available Days:** Monday, Wednesday, Friday  
+**Hours:** 09:00 – 17:00  
+**Languages:** English, Hindi  
+Dr. Sharma is our lead general dentist, known for her gentle approach and thorough examinations.
+
+---
+
+## Dr. Rohan Mehta — Endodontist
+**Specialization:** Root Canal Treatment, Endodontics  
+**Experience:** 9 years  
+**Available Days:** Tuesday, Thursday, Saturday  
+**Hours:** 10:00 – 18:00  
+**Languages:** English, Hindi, Marathi  
+Dr. Mehta specialises in saving teeth through advanced root canal procedures.
+
+---
+
+## Dr. Priya Nair — Orthodontist
+**Specialization:** Braces, Clear Aligners, Malocclusion  
+**Experience:** 11 years  
+**Available Days:** Monday, Tuesday, Friday  
+**Hours:** 09:00 – 16:00  
+**Languages:** English, Malayalam  
+Dr. Nair creates personalised treatment plans for both children and adults seeking straighter smiles.
+
+---
+
+## Dr. Samuel Okafor — Oral Surgeon
+**Specialization:** Implants, Wisdom Tooth Removal, Bone Grafting  
+**Experience:** 15 years  
+**Available Days:** Wednesday, Thursday, Friday  
+**Hours:** 08:00 – 15:00  
+**Languages:** English, Yoruba  
+Dr. Okafor is a fellowship-trained oral surgeon with expertise in complex extractions and implantology.
+
+---
+
+## Dr. Liu Wei — Cosmetic Dentist
+**Specialization:** Veneers, Whitening, Smile Makeovers  
+**Experience:** 8 years  
+**Available Days:** Monday, Wednesday, Saturday  
+**Hours:** 10:00 – 18:00  
+**Languages:** English, Mandarin  
+Dr. Wei combines artistic sensibility with clinical expertise to deliver stunning smile transformations.
+
+---
+
+## Dr. Fatima Al-Hassan — Paediatric Dentist
+**Specialization:** Paediatric Dentistry, Preventive Care  
+**Experience:** 10 years  
+**Available Days:** Tuesday, Thursday, Saturday  
+**Hours:** 09:00 – 17:00  
+**Languages:** English, Arabic  
+Dr. Al-Hassan specialises in making dental visits fun and anxiety-free for children.
+
+---
+
+## Dr. Carlos Rivera — Periodontist
+**Specialization:** Gum Disease, Scaling & Root Planing, Gum Surgery  
+**Experience:** 13 years  
+**Available Days:** Monday, Thursday, Friday  
+**Hours:** 08:00 – 16:00  
+**Languages:** English, Spanish  
+Dr. Rivera focuses on the health of gum tissue and supporting bone structure.
+
+---
+
+## Dr. Mei Tanaka — Prosthodontist
+**Specialization:** Crowns, Bridges, Dentures, Full-Mouth Rehabilitation  
+**Experience:** 14 years  
+**Available Days:** Tuesday, Wednesday, Saturday  
+**Hours:** 09:00 – 17:00  
+**Languages:** English, Japanese  
+Dr. Tanaka restores function and aesthetics for patients with complex dental needs.
+
+---
+
+## Dr. James O'Brien — Emergency Dentist
+**Specialization:** Emergency Care, Trauma, Pain Management  
+**Experience:** 7 years  
+**Available Days:** Monday, Tuesday, Wednesday, Thursday, Friday, Saturday  
+**Hours:** 08:00 – 20:00  
+**Languages:** English, Irish Gaelic  
+Dr. O'Brien handles urgent dental issues with speed and compassion, including weekends.
+
+---
+
+## Dr. Aisha Patel — General Dentist
+**Specialization:** General Dentistry, Fillings, Preventive Care  
+**Experience:** 6 years  
+**Available Days:** Wednesday, Thursday, Saturday  
+**Hours:** 10:00 – 18:00  
+**Languages:** English, Gujarati  
+Dr. Patel is known for her patient-first approach and meticulous attention to detail.
+
+---
+
+## Dr. Nikolai Volkov — Radiologist & Diagnostics
+**Specialization:** Dental Radiology, CBCT Scanning, Diagnosis  
+**Experience:** 10 years  
+**Available Days:** Monday, Friday  
+**Hours:** 09:00 – 15:00  
+**Languages:** English, Russian  
+Dr. Volkov performs advanced imaging and diagnostic consultations to guide treatment planning.
+
+---
+
+## Dr. Sara Kim — Implantologist
+**Specialization:** Dental Implants, All-on-4, Guided Surgery  
+**Experience:** 11 years  
+**Available Days:** Tuesday, Thursday  
+**Hours:** 09:00 – 17:00  
+**Languages:** English, Korean  
+Dr. Kim is a specialist in full-arch implant restorations and guided surgical techniques.
+</file>
+
+<file path="data/faq.md">
+# Frequently Asked Questions
+
+## Appointments
+**Q: How do I book an appointment?**  
+A: You can book through our online chat assistant, call us at +1 (800) 555-2368, or walk in during working hours.
+
+**Q: Can I choose my doctor?**  
+A: Yes. You can request a specific doctor when booking, subject to availability.
+
+**Q: How early should I arrive?**  
+A: Please arrive 10 minutes before your appointment to complete any paperwork.
+
+**Q: What if I need to cancel?**  
+A: Cancellations should be made at least 24 hours in advance. Late cancellations may incur a fee.
+
+## Insurance & Payment
+**Q: Do you accept insurance?**  
+A: Yes, we accept most major dental insurance plans including Delta Dental, Cigna, MetLife, and Aetna.
+
+**Q: What payment methods are accepted?**  
+A: We accept cash, all major credit/debit cards, and health savings accounts (HSA/FSA).
+
+**Q: Do you offer payment plans?**  
+A: Yes, interest-free payment plans are available for treatments over $500. Ask our front desk for details.
+
+## General
+**Q: Is the clinic wheelchair accessible?**  
+A: Yes, our clinic is fully wheelchair accessible with a dedicated lift and accessible restrooms.
+
+**Q: Do you offer emergency slots?**  
+A: Yes. Same-day emergency appointments are available Monday–Saturday. Call us as soon as possible.
+
+**Q: Is parking available?**  
+A: Yes, free parking is available in our dedicated lot adjacent to the building. Bike racks are also provided.
+
+**Q: Are children welcome?**  
+A: Absolutely. We have a dedicated paediatric team and a child-friendly waiting area.
+
+**Q: What COVID-19 precautions are in place?**  
+A: We follow all current health authority guidelines, including enhanced sterilisation, PPE for all staff, and air purification systems in every treatment room.
+</file>
+
+<file path="data/pricing.md">
+# Treatment Pricing
+
+> All prices are in USD. Final costs may vary based on individual assessment. Insurance coverage may reduce out-of-pocket costs.
+
+## General Dentistry
+| Treatment | Price Range |
+|-----------|-------------|
+| Routine Checkup & Cleaning | $80 – $150 |
+| X-Rays (Full Set) | $100 – $200 |
+| Composite Filling (per tooth) | $150 – $300 |
+| Simple Extraction | $150 – $250 |
+| Surgical Extraction | $250 – $500 |
+| Root Canal Treatment (anterior) | $700 – $900 |
+| Root Canal Treatment (molar) | $900 – $1,400 |
+
+## Cosmetic Dentistry
+| Treatment | Price Range |
+|-----------|-------------|
+| In-Office Teeth Whitening | $400 – $700 |
+| Take-Home Whitening Kit | $200 – $350 |
+| Porcelain Veneers (per tooth) | $900 – $2,000 |
+| Composite Bonding (per tooth) | $250 – $500 |
+| Smile Makeover (full) | $3,000 – $10,000+ |
+
+## Orthodontics
+| Treatment | Price Range |
+|-----------|-------------|
+| Metal Braces | $3,000 – $5,000 |
+| Ceramic Braces | $4,000 – $6,000 |
+| Clear Aligners (Invisalign) | $4,500 – $7,500 |
+| Retainer (per arch) | $200 – $400 |
+
+## Oral Surgery & Implants
+| Treatment | Price Range |
+|-----------|-------------|
+| Wisdom Tooth Removal (simple) | $200 – $400 |
+| Wisdom Tooth Removal (impacted) | $350 – $700 |
+| Single Dental Implant | $2,500 – $4,500 |
+| All-on-4 Implants (per arch) | $15,000 – $25,000 |
+| Bone Grafting | $500 – $3,000 |
+
+## Paediatric Dentistry
+| Treatment | Price Range |
+|-----------|-------------|
+| Child Checkup & Cleaning | $60 – $120 |
+| Fluoride Treatment | $30 – $50 |
+| Fissure Sealant (per tooth) | $40 – $60 |
+
+## Emergency
+| Treatment | Price Range |
+|-----------|-------------|
+| Emergency Consultation | $100 – $200 |
+| Temporary Filling | $80 – $150 |
+| Re-cementation of Crown | $100 – $200 |
+</file>
+
+<file path="data/services.md">
+# Services Offered
+
+## General Dentistry
+- **Routine Checkup & Cleaning** — Comprehensive oral exam, X-rays, professional scaling and polishing.
+- **Fillings** — Tooth-coloured composite resin fillings for cavities.
+- **Extractions** — Simple and surgical tooth extractions.
+- **Root Canal Treatment (RCT)** — Removal of infected pulp to save the natural tooth.
+- **Dental Crowns & Bridges** — Porcelain or zirconia crowns; bridges for missing teeth.
+
+## Cosmetic Dentistry
+- **Teeth Whitening** — In-office laser whitening and take-home kits.
+- **Veneers** — Ultra-thin porcelain or composite shells bonded to the front surface of teeth.
+- **Smile Makeover** — Combined cosmetic procedures tailored to the patient's goals.
+- **Bonding** — Composite resin applied to repair chips or close gaps.
+
+## Orthodontics
+- **Traditional Braces** — Metal and ceramic braces for alignment correction.
+- **Clear Aligners (Invisalign)** — Removable transparent trays for discreet teeth straightening.
+- **Retainers** — Post-treatment retention appliances.
+
+## Oral Surgery
+- **Wisdom Tooth Removal** — Simple and impacted third-molar extractions.
+- **Dental Implants** — Titanium posts surgically placed to replace missing teeth.
+- **Bone Grafting** — Preparation procedure for implant placement.
+
+## Paediatric Dentistry
+- **Child Checkups** — Gentle exams and cleanings for children aged 2–16.
+- **Fluoride Treatment** — Preventive fluoride application.
+- **Fissure Sealants** — Protective coatings applied to back teeth.
+
+## Emergency Dentistry
+- Toothache relief, chipped or knocked-out tooth, lost filling or crown.
+- Same-day emergency slots available Monday–Saturday.
+</file>
+
+<file path="frontend/.gitignore">
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+</file>
+
+<file path="frontend/eslint.config.js">
+import js from '@eslint/js'
+import globals from 'globals'
+import react from 'eslint-plugin-react'
+import reactHooks from 'eslint-plugin-react-hooks'
+import reactRefresh from 'eslint-plugin-react-refresh'
+
+export default [
+  { ignores: ['dist'] },
+  {
+    files: ['**/*.{js,jsx}'],
+    languageOptions: {
+      ecmaVersion: 2020,
+      globals: globals.browser,
+      parserOptions: {
+        ecmaVersion: 'latest',
+        ecmaFeatures: { jsx: true },
+        sourceType: 'module',
+      },
+    },
+    settings: { react: { version: '18.3' } },
+    plugins: {
+      react,
+      'react-hooks': reactHooks,
+      'react-refresh': reactRefresh,
+    },
+    rules: {
+      ...js.configs.recommended.rules,
+      'react/prop-types': 'off',
+      ...react.configs.recommended.rules,
+      ...react.configs['jsx-runtime'].rules,
+      ...reactHooks.configs.recommended.rules,
+      'react/jsx-no-target-blank': 'off',
+      'react-refresh/only-export-components': [
+        'warn',
+        { allowConstantExport: true },
+      ],
+    },
+  },
+]
+</file>
+
+<file path="frontend/index.html">
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vite + React</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+</file>
+
+<file path="frontend/package.json">
+{
+  "name": "frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "uuid": "^14.0.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.13.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "eslint": "^9.13.0",
+    "eslint-plugin-react": "^7.37.2",
+    "eslint-plugin-react-hooks": "^5.0.0",
+    "eslint-plugin-react-refresh": "^0.4.14",
+    "globals": "^15.11.0",
+    "vite": "^5.4.10"
+  }
+}
+</file>
+
+<file path="frontend/public/vite.svg">
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" aria-hidden="true" role="img" class="iconify iconify--logos" width="31.88" height="32" preserveAspectRatio="xMidYMid meet" viewBox="0 0 256 257"><defs><linearGradient id="IconifyId1813088fe1fbc01fb466" x1="-.828%" x2="57.636%" y1="7.652%" y2="78.411%"><stop offset="0%" stop-color="#41D1FF"></stop><stop offset="100%" stop-color="#BD34FE"></stop></linearGradient><linearGradient id="IconifyId1813088fe1fbc01fb467" x1="43.376%" x2="50.316%" y1="2.242%" y2="89.03%"><stop offset="0%" stop-color="#FFEA83"></stop><stop offset="8.333%" stop-color="#FFDD35"></stop><stop offset="100%" stop-color="#FFA800"></stop></linearGradient></defs><path fill="url(#IconifyId1813088fe1fbc01fb466)" d="M255.153 37.938L134.897 252.976c-2.483 4.44-8.862 4.466-11.382.048L.875 37.958c-2.746-4.814 1.371-10.646 6.827-9.67l120.385 21.517a6.537 6.537 0 0 0 2.322-.004l117.867-21.483c5.438-.991 9.574 4.796 6.877 9.62Z"></path><path fill="url(#IconifyId1813088fe1fbc01fb467)" d="M185.432.063L96.44 17.501a3.268 3.268 0 0 0-2.634 3.014l-5.474 92.456a3.268 3.268 0 0 0 3.997 3.378l24.777-5.718c2.318-.535 4.413 1.507 3.936 3.838l-7.361 36.047c-.495 2.426 1.782 4.5 4.151 3.78l15.304-4.649c2.372-.72 4.652 1.36 4.15 3.788l-11.698 56.621c-.732 3.542 3.979 5.473 5.943 2.437l1.313-2.028l72.516-144.72c1.215-2.423-.88-5.186-3.54-4.672l-25.505 4.922c-2.396.462-4.435-1.77-3.759-4.114l16.646-57.705c.677-2.35-1.37-4.583-3.769-4.113Z"></path></svg>
+</file>
+
+<file path="frontend/README.md">
+# React + Vite
+
+This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+
+Currently, two official plugins are available:
+
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md) uses [Babel](https://babeljs.io/) for Fast Refresh
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+</file>
+
+<file path="frontend/src/api/chatApi.js">
+import { API_BASE_URL } from "../config";
+
+export async function sendMessage(message, senderId) {
+  const res = await fetch(`${API_BASE_URL}/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      message,
+      sender_id: senderId,
+      vector_store: "chroma",
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Chat request failed: ${res.status}`);
+  }
+  const data = await res.json();
+  return data.response;
+}
+
+export async function resetConversation(senderId) {
+  const res = await fetch(`${API_BASE_URL}/reset/${senderId}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    throw new Error(`Reset request failed: ${res.status}`);
+  }
+  return res.json();
+}
+</file>
+
+<file path="frontend/src/App.css">
+:root {
+  --bg: #ffffff;
+  --bg-soft: #f7f7f8;
+  --text: #1f1f1f;
+  --text-soft: #6e6e80;
+  --border: #e5e5e5;
+  --accent: #10a37f;
+  --accent-hover: #0d8a6b;
+  --bubble-user: #10a37f;
+  --bubble-user-text: #ffffff;
+  --bubble-assistant: #f7f7f8;
+}
+
+[data-theme="dark"] {
+  --bg: #212121;
+  --bg-soft: #2a2a2a;
+  --text: #ececec;
+  --text-soft: #9b9b9b;
+  --border: #3a3a3a;
+  --accent: #10a37f;
+  --accent-hover: #13c393;
+  --bubble-user: #10a37f;
+  --bubble-user-text: #ffffff;
+  --bubble-assistant: #2f2f2f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--bg);
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  z-index: 10;
+}
+
+.app-header h1 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text);
+}
+
+.header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.icon-button, .new-chat-button {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--text);
+  transition: background 0.15s ease;
+}
+
+.icon-button:hover, .new-chat-button:hover {
+  background: var(--border);
+}
+
+.chat-window {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chat-window::-webkit-scrollbar {
+  width: 8px;
+}
+.chat-window::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 8px;
+}
+
+.empty-state {
+  margin: auto;
+  text-align: center;
+  color: var(--text-soft);
+  font-size: 15px;
+  max-width: 320px;
+}
+
+.message-row {
+  display: flex;
+  gap: 12px;
+  max-width: 760px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 10px 24px;
+  animation: fadeIn 0.25s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.message-row-user {
+  flex-direction: row-reverse;
+}
+
+.avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  flex-shrink: 0;
+  color: white;
+}
+
+.avatar-user {
+  background: #6e6e80;
+}
+
+.avatar-assistant {
+  background: var(--accent);
+}
+
+.message-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 78%;
+}
+
+.message-row-user .message-content {
+  align-items: flex-end;
+}
+
+.message-bubble {
+  padding: 10px 14px;
+  border-radius: 14px;
+  font-size: 14.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.message-bubble-user {
+  background: var(--bubble-user);
+  color: var(--bubble-user-text);
+  border-bottom-right-radius: 4px;
+}
+
+.message-bubble-assistant {
+  background: var(--bubble-assistant);
+  color: var(--text);
+  border-bottom-left-radius: 4px;
+}
+
+.copy-button {
+  background: none;
+  border: none;
+  color: var(--text-soft);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 4px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.message-row:hover .copy-button {
+  opacity: 1;
+}
+
+.copy-button:hover {
+  color: var(--text);
+}
+
+.typing-indicator {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 12px 14px;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-soft);
+  animation: blink 1.2s infinite ease-in-out;
+}
+
+.dot:nth-child(2) { animation-delay: 0.2s; }
+.dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes blink {
+  0%, 80%, 100% { opacity: 0.3; }
+  40% { opacity: 1; }
+}
+
+.error-banner {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 10px 24px;
+  color: #d64545;
+  font-size: 13px;
+}
+
+.input-area {
+  border-top: 1px solid var(--border);
+  padding: 16px 24px 20px;
+  background: var(--bg);
+}
+
+.message-input-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  max-width: 760px;
+  margin: 0 auto;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 8px 8px 8px 16px;
+}
+
+.message-input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 14.5px;
+  color: var(--text);
+  resize: none;
+  max-height: 160px;
+  line-height: 1.5;
+  padding: 6px 0;
+  font-family: inherit;
+}
+
+.message-input::placeholder {
+  color: var(--text-soft);
+}
+
+.send-button {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s ease;
+}
+
+.send-button:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.send-button:disabled {
+  background: var(--border);
+  color: var(--text-soft);
+  cursor: not-allowed;
+}
+
+.hint-text {
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--text-soft);
+  margin-top: 8px;
+}
+</file>
+
+<file path="frontend/src/App.jsx">
+import { useState, useEffect } from "react";
+import { useChat } from "./hooks/useChat";
+import ChatWindow from "./components/ChatWindow";
+import MessageInput from "./components/MessageInput";
+import "./App.css";
+
+export default function App() {
+  const { messages, isSending, error, send, startNewConversation } = useChat();
+  const [theme, setTheme] = useState("light");
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+  }, [theme]);
+
+  return (
+    <div className="app-shell">
+      <header className="app-header">
+        <h1>BrightSmile Dental Assistant</h1>
+        <div className="header-actions">
+          <button
+            className="icon-button"
+            onClick={() => setTheme(theme === "light" ? "dark" : "light")}
+          >
+            {theme === "light" ? "🌙" : "☀️"}
+          </button>
+          <button className="new-chat-button" onClick={startNewConversation}>
+            New conversation
+          </button>
+        </div>
+      </header>
+
+      <ChatWindow messages={messages} isSending={isSending} />
+
+      {error && <div className="error-banner">{error}</div>}
+
+      <MessageInput onSend={send} disabled={isSending} />
+    </div>
+  );
+}
+</file>
+
+<file path="frontend/src/components/ChatWindow.jsx">
+import { useEffect, useRef } from "react";
+import MessageBubble from "./MessageBubble";
+import TypingIndicator from "./TypingIndicator";
+
+export default function ChatWindow({ messages, isSending }) {
+  const bottomRef = useRef(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isSending]);
+
+  return (
+    <div className="chat-window">
+      {messages.length === 0 && (
+        <div className="empty-state">
+          👋 Hi! Ask me to book, cancel, or reschedule an appointment, or ask about our
+          services.
+        </div>
+      )}
+      {messages.map((msg, i) => (
+        <MessageBubble key={i} role={msg.role} content={msg.content} />
+      ))}
+      {isSending && <TypingIndicator />}
+      <div ref={bottomRef} />
+    </div>
+  );
+}
+</file>
+
+<file path="frontend/src/components/MessageBubble.jsx">
+import { useState } from "react";
+
+export default function MessageBubble({ role, content }) {
+  const isUser = role === "user";
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(content);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <div className={`message-row ${isUser ? "message-row-user" : "message-row-assistant"}`}>
+      <div className={`avatar ${isUser ? "avatar-user" : "avatar-assistant"}`}>
+        {isUser ? "U" : "B"}
+      </div>
+      <div className="message-content">
+        <div className={`message-bubble ${isUser ? "message-bubble-user" : "message-bubble-assistant"}`}>
+          {content}
+        </div>
+        {!isUser && (
+          <button className="copy-button" onClick={handleCopy}>
+            {copied ? "Copied" : "Copy"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="frontend/src/components/MessageInput.jsx">
+import { useState, useRef, useEffect } from "react";
+
+export default function MessageInput({ onSend, disabled }) {
+  const [value, setValue] = useState("");
+  const textareaRef = useRef(null);
+
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [value]);
+
+  const submit = () => {
+    if (!value.trim() || disabled) return;
+    onSend(value);
+    setValue("");
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      submit();
+    }
+  };
+
+  return (
+    <div className="input-area">
+      <div className="message-input-form">
+        <textarea
+          ref={textareaRef}
+          className="message-input"
+          placeholder="Message BrightSmile Assistant..."
+          value={value}
+          rows={1}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={handleKeyDown}
+          disabled={disabled}
+        />
+        <button
+          className="send-button"
+          type="button"
+          onClick={submit}
+          disabled={disabled || !value.trim()}
+          aria-label="Send message"
+        >
+          ➤
+        </button>
+      </div>
+      <div className="hint-text">Enter to send · Shift+Enter for new line</div>
+    </div>
+  );
+}
+</file>
+
+<file path="frontend/src/components/TypingIndicator.jsx">
+export default function TypingIndicator() {
+  return (
+    <div className="message-row message-row-assistant">
+      <div className="message-bubble message-bubble-assistant typing-indicator">
+        <span className="dot" />
+        <span className="dot" />
+        <span className="dot" />
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="frontend/src/config.js">
+export const API_BASE_URL = "http://localhost:8000";
+</file>
+
+<file path="frontend/src/hooks/useChat.js">
+import { useState, useCallback } from "react";
+import { v4 as uuidv4 } from "uuid";
+import { sendMessage, resetConversation } from "../api/chatApi";
+
+const SENDER_ID_KEY = "brightsmile_sender_id";
+
+function getOrCreateSenderId() {
+  let id = localStorage.getItem(SENDER_ID_KEY);
+  if (!id) {
+    id = uuidv4();
+    localStorage.setItem(SENDER_ID_KEY, id);
+  }
+  return id;
+}
+
+export function useChat() {
+  const [senderId, setSenderId] = useState(getOrCreateSenderId);
+  const [messages, setMessages] = useState([]);
+  const [isSending, setIsSending] = useState(false);
+  const [error, setError] = useState(null);
+
+  const send = useCallback(
+    async (text) => {
+      const trimmed = text.trim();
+      if (!trimmed || isSending) return;
+
+      setError(null);
+      setMessages((prev) => [...prev, { role: "user", content: trimmed }]);
+      setIsSending(true);
+
+      try {
+        const reply = await sendMessage(trimmed, senderId);
+        setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
+      } catch (err) {
+        setError("Something went wrong reaching the assistant. Please try again.");
+        console.error(err);
+      } finally {
+        setIsSending(false);
+      }
+    },
+    [senderId, isSending]
+  );
+
+  const startNewConversation = useCallback(async () => {
+    try {
+      await resetConversation(senderId);
+    } catch (err) {
+      console.error("Reset failed:", err);
+    }
+    const newId = uuidv4();
+    localStorage.setItem(SENDER_ID_KEY, newId);
+    setSenderId(newId);
+    setMessages([]);
+    setError(null);
+  }, [senderId]);
+
+  return { messages, isSending, error, send, startNewConversation, senderId };
+}
+</file>
+
+<file path="frontend/src/index.css">
+
+</file>
+
+<file path="frontend/src/main.jsx">
+import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
+import './index.css'
+import App from './App.jsx'
+
+createRoot(document.getElementById('root')).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+)
+</file>
+
+<file path="frontend/vite.config.js">
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+// https://vite.dev/config/
+export default defineConfig({
+  plugins: [react()],
+})
+</file>
+
+<file path="ingest_pinecone.py">
+import logging
+from dotenv import load_dotenv
+load_dotenv()
+
+from rag.ingest import load_documents
+from langchain_openai import OpenAIEmbeddings
+from langchain_pinecone import PineconeVectorStore
+from config import PINECONE_INDEX_NAME
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
+
+def ingest():
+    logger.info("Loading documents...")
+    chunks = load_documents()
+    logger.info("Loaded %d chunks.", len(chunks))
+    logger.info("Uploading to Pinecone...")
+    embeddings = OpenAIEmbeddings(model="text-embedding-3-small", dimensions=768)
+    PineconeVectorStore.from_documents(chunks, embedding=embeddings, index_name=PINECONE_INDEX_NAME)
+    logger.info("Done.")
+
+if __name__ == "__main__":
+    ingest()
+</file>
+
+<file path="rag/__init__.py">
+from .chroma_store import get_chroma_retriever, upsert_chroma
+from .pinecone_store import get_pinecone_retriever, upsert_pinecone
+from .milvus_store import get_milvus_retriever, upsert_milvus
+</file>
+
+<file path="rag/chroma_store.py">
+import logging
+from langchain_chroma import Chroma
+from langchain_openai import OpenAIEmbeddings
+from rag.ingest import load_documents
+from rag.upsert import load_chunks_with_ids
+from config import CHROMA_PERSIST_DIR
+import os
+
+
+logger = logging.getLogger(__name__)
+
+def get_chroma_retriever():
+    embeddings = OpenAIEmbeddings()
+    if os.path.exists(CHROMA_PERSIST_DIR) and os.listdir(CHROMA_PERSIST_DIR):
+        logger.info("Loading existing Chroma index.")
+        vectorstore = Chroma(persist_directory=CHROMA_PERSIST_DIR, embedding_function=embeddings)
+    else:
+        logger.info("Building new Chroma index.")
+        chunks = load_documents()
+        vectorstore = Chroma.from_documents(chunks, embedding=embeddings, persist_directory=CHROMA_PERSIST_DIR)
+    return vectorstore.as_retriever(search_kwargs={"k": 4})
+
+
+def upsert_chroma():
+    """
+    Clear ALL existing chunks currently in Chroma, then re-ingest fresh from
+    data/.md. Full clear-then-rebuild — not an incremental upsert — so
+    stale/orphaned chunks from a previous ingest (e.g. a source doc that
+    was deleted, renamed, or re-chunked differently) never linger in the
+    index alongside the new ones.
+    """
+    embeddings = OpenAIEmbeddings()
+    chunks, ids = load_chunks_with_ids()
+    vectorstore = Chroma(persist_directory=CHROMA_PERSIST_DIR, embedding_function=embeddings)
+
+    existing_ids = (vectorstore.get() or {}).get("ids") or []
+    if existing_ids:
+        vectorstore.delete(ids=existing_ids)
+        logger.info("Cleared %d old chunks from Chroma.", len(existing_ids))
+
+    vectorstore.add_documents(chunks, ids=ids)
+    logger.info("Upserted %d fresh chunks into Chroma.", len(chunks))
+</file>
+
+<file path="rag/ingest.py">
+import os
+from langchain_community.document_loaders import DirectoryLoader, UnstructuredMarkdownLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+def load_documents(data_dir: str = "data"):
+    loader = DirectoryLoader(
+        data_dir,
+        glob="**/*.md",
+        loader_cls=UnstructuredMarkdownLoader
+    )
+    documents = loader.load()
+    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    chunks = splitter.split_documents(documents)
+    return chunks
+</file>
+
+<file path="rag/milvus_store.py">
+import logging
+from pymilvus import connections, utility
+import pymilvus.orm.connections as _orm_conn
+from pymilvus.exceptions import ConnectionNotExistException
+from langchain_milvus import Milvus
+from langchain_openai import OpenAIEmbeddings
+from rag.upsert import load_chunks_with_ids
+from config import MILVUS_URI, MILVUS_COLLECTION_NAME
+
+logger = logging.getLogger(__name__)
+
+_ALIAS = "default"
+_patched = False
+
+
+def _ensure_connection():
+    """
+    Guarantee a live, freshly-connected handler under _ALIAS in the legacy
+    ORM registry, and make sure the pymilvus/langchain-milvus compatibility
+    patch below is installed exactly once.
+
+    Always disconnects and reconnects rather than trusting
+    list_connections() - a connection registered from a different thread
+    (e.g. established once at FastAPI startup on the main thread, then
+    reused later inside run_in_threadpool's worker thread) can be listed
+    as "existing" without actually being usable from the calling thread.
+    This function runs on a rare, admin-triggered path, so the extra
+    reconnect cost here is negligible - trading a little redundancy for
+    not silently hitting that gap again.
+    """
+    existing_aliases = [alias for alias, _ in connections.list_connections()]
+    if _ALIAS in existing_aliases:
+        connections.disconnect(_ALIAS)
+    connections.connect(alias=_ALIAS, uri=MILVUS_URI)
+
+    _patch_fetch_handler_fallback()
+
+
+def _patch_fetch_handler_fallback():
+    """
+    Compatibility shim for pymilvus>=2.6 + langchain-milvus 0.3.3.
+
+    langchain_milvus builds its own internal MilvusClient and uses its
+    auto-generated alias (e.g. "cm-xxxxx") for self.alias, but never
+    registers that alias in the legacy ORM `connections` registry.
+    langchain_milvus's `self.col` property still calls the deprecated
+    `Collection(name, using=self.alias)`, which looks the alias up ONLY
+    in that ORM registry via `connections._fetch_handler(alias)` - so it
+    always raises ConnectionNotExistException, even though a working
+    connection genuinely exists (just under MilvusClient's own separate
+    connection manager). This is a known upstream gap between the two
+    APIs (see pymilvus-io/pymilvus#1643), not anything wrong with our
+    connection setup.
+
+    Fix: patch `_fetch_handler` so that if the specific alias isn't found
+    in the ORM registry, it falls back to our pre-connected `_ALIAS`
+    handler instead of raising. Idempotent - safe to call repeatedly.
+    """
+    global _patched
+    if _patched:
+        return
+
+    original_fetch_handler = _orm_conn.Connections._fetch_handler
+
+    def _patched_fetch_handler(self, alias):
+        try:
+            return original_fetch_handler(self, alias)
+        except ConnectionNotExistException:
+            return original_fetch_handler(self, _ALIAS)
+
+    _orm_conn.Connections._fetch_handler = _patched_fetch_handler
+    _patched = True
+    logger.info("Patched pymilvus _fetch_handler for langchain-milvus compatibility.")
+
+
+def get_milvus_retriever():
+    embeddings = OpenAIEmbeddings()
+    _ensure_connection()
+    vectorstore = Milvus(
+        embedding_function=embeddings,
+        collection_name=MILVUS_COLLECTION_NAME,
+        connection_args={"uri": MILVUS_URI},
+        auto_id=False,
+    )
+    return vectorstore.as_retriever(search_kwargs={"k": 4})
+
+
+def upsert_milvus():
+    """
+    Clear the existing Milvus collection entirely, then rebuild it fresh
+    from data/*.md.
+    """
+    embeddings = OpenAIEmbeddings()
+    chunks, ids = load_chunks_with_ids()
+
+    _ensure_connection()
+    if utility.has_collection(MILVUS_COLLECTION_NAME, using=_ALIAS):
+        utility.drop_collection(MILVUS_COLLECTION_NAME, using=_ALIAS)
+        logger.info("Dropped existing Milvus collection '%s'.", MILVUS_COLLECTION_NAME)
+
+    vectorstore = Milvus(
+        embedding_function=embeddings,
+        collection_name=MILVUS_COLLECTION_NAME,
+        connection_args={"uri": MILVUS_URI},
+        auto_id=False,
+    )
+    vectorstore.add_documents(chunks, ids=ids)
+    logger.info(
+        "Upserted %d fresh chunks into Milvus collection '%s'.",
+        len(chunks), MILVUS_COLLECTION_NAME,
+    )
+</file>
+
+<file path="rag/pinecone_store.py">
+import logging
+from langchain_pinecone import PineconeVectorStore
+from langchain_openai import OpenAIEmbeddings
+from config import PINECONE_API_KEY, PINECONE_INDEX_NAME
+from pinecone import Pinecone
+from rag.upsert import load_chunks_with_ids
+
+
+logger = logging.getLogger(__name__)
+
+def get_pinecone_retriever():
+    embeddings = OpenAIEmbeddings(model="text-embedding-3-small", dimensions=768)
+    vectorstore = PineconeVectorStore.from_existing_index(
+        index_name=PINECONE_INDEX_NAME,
+        embedding=embeddings
+    )
+    return vectorstore.as_retriever(search_kwargs={"k": 4})
+
+
+def upsert_pinecone():
+    """
+    Clear ALL existing vectors currently in the Pinecone index, then
+    re-ingest fresh from data/*.md. Full clear-then-rebuild — not an
+    incremental upsert — so stale/orphaned chunks from a previous ingest
+    never linger alongside the new ones.
+
+    Note: index.delete(delete_all=True) targets the default namespace ("").
+    If you ingest into a non-default namespace elsewhere, pass
+    namespace=... to both this delete call and from_documents below.
+    """
+    embeddings = OpenAIEmbeddings(model="text-embedding-3-small", dimensions=768)
+    chunks, ids = load_chunks_with_ids()
+
+    pc = Pinecone(api_key=PINECONE_API_KEY)
+    index = pc.Index(PINECONE_INDEX_NAME)
+    try:
+        index.delete(delete_all=True)
+        logger.info("Cleared all existing vectors from Pinecone index '%s'.", PINECONE_INDEX_NAME)
+    except Exception as e:
+        # Pinecone raises a 404-style error if the namespace has never had
+        # any vectors written to it yet (nothing to delete) — safe to
+        # ignore and proceed straight to ingesting.
+        logger.info("Nothing to clear in Pinecone index '%s' (%s).", PINECONE_INDEX_NAME, e)
+
+    PineconeVectorStore.from_documents(
+        chunks, embedding=embeddings, index_name=PINECONE_INDEX_NAME, ids=ids,
+    )
+    logger.info("Upserted %d fresh chunks into Pinecone.", len(chunks))
+</file>
+
+<file path="rag/upsert.py">
+import hashlib
+import logging
+
+from rag.ingest import load_documents
+
+logger = logging.getLogger(__name__)
+
+def _stable_id(doc, index:int) -> str:
+    """
+    Deterministic ID from source path + chunk index + a content hash.
+    Kept even with clear-then-rebuild, because Pinecone/Milvus still need
+    an id per vector on write — this just guarantees the same source chunk
+    gets the same id across rebuilds, which is handy for debugging/logs
+    even though the clear step means duplicates were never the risk here.
+    """
+
+    source = doc.metadata.get("source", "unknown")
+    digest = hashlib.sha256(doc.page_content.encode("utf-8")).hexdigest()[:12]
+    return f"{source}:{index}:{digest}"
+
+def load_chunks_with_ids():
+    chunks = load_documents()
+    ids = [_stable_id(doc, i) for i, doc in enumerate(chunks)]
+    return chunks, ids
+</file>
+
+<file path="store/__init__.py">
+from .redis_store import get_conversation, save_conversation, get_faq_index, add_faq_entry
+
+__all__ = ["get_conversation", "save_conversation", "get_faq_index", "add_faq_entry"]
+</file>
+
+<file path="store/redis_store.py">
+import json
+import logging
+import time
+from upstash_redis.asyncio import Redis
+from config import UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN, FAQ_CACHE_TTL_SECONDS
+
+logger = logging.getLogger(__name__)
+
+_redis = Redis(url=UPSTASH_REDIS_REST_URL, token=UPSTASH_REDIS_REST_TOKEN)
+
+
+def _key(sender_id: str) -> str:
+    return f"conv:{sender_id}"
+
+
+async def get_conversation(sender_id: str) -> dict:
+    raw = await _redis.get(_key(sender_id))
+    if not raw:
+        return {"history": [], "state": {}}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        logger.error("Corrupt conversation JSON for sender %s, resetting.", sender_id)
+        return {"history": [], "state": {}}
+
+
+async def save_conversation(sender_id: str, history: list[dict], state: dict) -> None:
+    await _redis.set(_key(sender_id), json.dumps({"history": history, "state": state}))
+
+
+# ---------------------------------------------------------------------------
+# FAQ semantic cache — separate namespace from per-conversation state above.
+#
+# A plain exact/normalized-string cache only catches literal repeats of the
+# same phrasing. Real users ask the same underlying question in many
+# different words ("what services do you provide" vs "what are the
+# services" vs "what do you offer"), which never match on string equality.
+# So instead of hashing the question text, we store a small index of
+# {question, answer, embedding} entries and match new questions against it
+# by cosine similarity of their embeddings (computed in agents/knowledge_agent.py,
+# using OpenAI embeddings — a request that costs a small fraction of a cent
+# and nothing close to a full LLM call).
+#
+# The whole index lives under one Redis key as a JSON array. For a clinic
+# FAQ (a few dozen to a few hundred distinct questions), this is simpler and
+# cheaper than standing up a real vector DB, and the whole index is small
+# enough to fetch and scan in Python on every knowledge-agent turn.
+# Capped at FAQ_INDEX_MAX_ENTRIES, oldest entries dropped first.
+# ---------------------------------------------------------------------------
+
+FAQ_INDEX_KEY = "faq:index"
+
+
+async def get_faq_index() -> list[dict]:
+    raw = await _redis.get(FAQ_INDEX_KEY)
+    if not raw:
+        return []
+    try:
+        index = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.error("Corrupt FAQ index JSON, resetting.")
+        return []
+
+    cutoff = time.time() - FAQ_CACHE_TTL_SECONDS
+    fresh = [e for e in index if e.get("created_at", 0) >= cutoff]
+    if len(fresh) != len(index):
+        logger.info("Dropped %d stale FAQ entries (older than %ds)", len(index) - len(fresh), FAQ_CACHE_TTL_SECONDS)
+        await _redis.set(FAQ_INDEX_KEY, json.dumps(fresh))
+    return fresh
+
+
+async def add_faq_entry(question: str, answer: str, embedding: list[float], max_entries: int) -> None:
+    index = await get_faq_index()
+    index.append({"question": question, "answer": answer, "embedding": embedding, "created_at": time.time()})
+    if len(index) > max_entries:
+        index = index[-max_entries:]  # drop oldest first
+    await _redis.set(FAQ_INDEX_KEY, json.dumps(index))
+    logger.info("FAQ index STORE for %r (index size now %d)", question, len(index))
+</file>
+
+<file path="test_milvus2.py">
+from dotenv import load_dotenv
+load_dotenv()
+
+from pymilvus import connections
+import pymilvus.orm.connections as _orm_conn
+from pymilvus.exceptions import ConnectionNotExistException
+
+from config import MILVUS_URI, MILVUS_COLLECTION_NAME
+from langchain_milvus import Milvus
+from langchain_openai import OpenAIEmbeddings
+from langchain_core.documents import Document
+
+# One guaranteed-real handler, registered under "default".
+connections.connect(alias="default", uri=MILVUS_URI)
+
+# langchain_milvus's internal MilvusClient generates its own alias
+# (e.g. "cm-...") but never registers it in the legacy ORM registry
+# that Collection()/_fetch_handler read from - a known gap between
+# MilvusClient and the ORM API (pymilvus-io/pymilvus#1643). Patch the
+# lookup to fall back to our pre-connected "default" handler whenever
+# the specific alias isn't found there.
+_original_fetch_handler = _orm_conn.Connections._fetch_handler
+
+def _patched_fetch_handler(self, alias):
+    try:
+        return _original_fetch_handler(self, alias)
+    except ConnectionNotExistException:
+        return _original_fetch_handler(self, "default")
+
+_orm_conn.Connections._fetch_handler = _patched_fetch_handler
+
+vs = Milvus(
+    embedding_function=OpenAIEmbeddings(),
+    collection_name=MILVUS_COLLECTION_NAME,
+    connection_args={"uri": MILVUS_URI},
+    auto_id=False,
+)
+print("alias used:", vs.alias)
+
+vs.add_documents([Document(page_content="hello world test")], ids=["test-1"])
+print("SUCCESS")
+</file>
+
+<file path="tools/reschedule_tools.py">
+from langchain_core.tools import tool
+from db import (
+    reschedule_appointment as db_reschedule,
+    check_doctor_availability_excluding as db_check_excluding,
+    get_appointment_by_id as db_get_appointment_by_id,
+)
+
+
+@tool
+async def check_reschedule_availability(
+    appointment_id: int,
+    doctor_name: str,
+    new_date: str,
+    new_time: str,
+    duration_minutes: int = 30,
+) -> str:
+    """
+    Check if a doctor is available for a new date/time during a reschedule.
+    Excludes the appointment being rescheduled from the conflict check so it
+    doesn't block itself.
+    """
+    available = await db_check_excluding(
+        doctor_name, new_date, new_time, duration_minutes,
+        exclude_appointment_id=appointment_id,
+    )
+    if available:
+        return f"{doctor_name} is available on {new_date} at {new_time} for {duration_minutes} minutes."
+    return f"{doctor_name} is not available on {new_date} at {new_time}."
+
+
+@tool
+async def reschedule_appointment(
+    appointment_id: int,
+    patient_email: str,
+    new_doctor_name: str,
+    new_date: str,
+    new_time: str,
+    new_duration_minutes: int = 30,
+) -> str:
+    """
+    Reschedule an existing appointment in-place (UPDATE, not cancel+rebook).
+    Verifies ownership, checks availability, and updates the record atomically.
+    The appointment ID stays the same.
+    """
+    result = await db_reschedule(
+        appointment_id, patient_email, new_doctor_name,
+        new_date, new_time, new_duration_minutes,
+    )
+    if result["success"]:
+        appt = result["appointment"]
+        return (
+            f"Appointment {appt['id']} has been successfully rescheduled. "
+            f"New details: {appt['doctor_name']} on {appt['appointment_date']} "
+            f"at {appt['appointment_time']} for {appt['duration_minutes']} minutes."
+        )
+    if result["reason"] == "not_found":
+        return f"No appointment found with ID {appointment_id}."
+    if result["reason"] == "not_owner":
+        return f"Appointment {appointment_id} does not belong to your account."
+    if result["reason"] == "already_cancelled":
+        return f"Appointment {appointment_id} is already cancelled and cannot be rescheduled."
+    if result["reason"] == "doctor_not_found":
+        return f"Could not find a doctor matching '{new_doctor_name}'."
+    if result["reason"] == "unavailable":
+        return f"{new_doctor_name} is not available on {new_date} at {new_time}."
+    return f"Could not reschedule appointment {appointment_id}."
+</file>
+
+<file path=".gitignore">
+# Virtual environment
+venv/
+env/
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# LangSmith / LangChain cache
+.langchain.db
+.langsmith/
+
+# VS Code
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Chroma 
+chroma_db/
+
+# Pinecone / other vector store local files
+vector_store/
+
+# Logs
+*.log
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+</file>
+
+<file path="agents/__init__.py">
+from .supervisor import supervisor_node
+from .booking_agent import booking_node
+from .cancellation_agent import cancellation_node
+from .scheduling_agent import scheduling_node
+from .knowledge_agent import knowledge_node
+</file>
+
+<file path="agents/booking_agent.py">
+import logging
+import re
+from datetime import datetime
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
+from state import GraphState
+from db import (
+    check_doctor_availability as db_check_availability,
+    create_appointment as db_create_appointment,
+    find_alternative_doctor as db_find_alternative,
+    get_doctors_by_specialization as db_get_doctors_by_specialization,
+)
+from tools.email_sender import send_invite_email
+from agents.scheduling_agent import _explain_unavailable_with_specialist
+from config import MODEL_NAME
+
+logger = logging.getLogger(__name__)
+llm = ChatOpenAI(model=MODEL_NAME, temperature=0)
+
+# Same pattern as supervisor.py's _AFFIRMATIVE_PATTERN / scheduling_agent.py's
+# copy. Used below to gate Phase 5's booking confirmation — kept in sync
+# manually across the three files.
+_AFFIRMATIVE_PATTERN = re.compile(
+    r'^\s*(ok(ay)?|yes|yeah|yep|sure|go ahead|sounds good|confirm(ed)?)\s*[!.]*\s*$',
+    re.IGNORECASE,
+)
+
+REASON_MENU = (
+    "1. Toothache / Pain\n"
+    "2. Routine Checkup & Cleaning\n"
+    "3. Filling / Cavity\n"
+    "4. Root Canal\n"
+    "5. Teeth Whitening / Cosmetic\n"
+    "6. Braces / Aligners\n"
+    "7. Wisdom Tooth / Extraction\n"
+    "8. Dental Implants\n"
+    "9. Child / Kid's Appointment\n"
+    "10. Gum Problems\n"
+    "11. Crowns / Bridges / Dentures\n"
+    "12. Emergency\n"
+    "13. Other (describe briefly)"
+)
+
+REASON_TO_SPECIALIZATIONS = {
+    "toothache / pain":            ["Emergency Dentistry", "Endodontics", "General"],
+    "routine checkup & cleaning":  ["General"],
+    "filling / cavity":            ["General"],
+    "root canal":                  ["Endodontics"],
+    "teeth whitening / cosmetic":  ["Cosmetic"],
+    "braces / aligners":           ["Orthodontics"],
+    "wisdom tooth / extraction":   ["Oral Surgery"],
+    "dental implants":             ["Implantology", "Oral Surgery"],
+    "child / kid's appointment":   ["Paediatric"],
+    "gum problems":                ["Periodontics"],
+    "crowns / bridges / dentures": ["Prosthodontics"],
+    "emergency":                   ["Emergency Dentistry"],
+    "other":                       ["General"],
+}
+
+
+async def _get_doctors_for_reason(reason: str) -> list[dict]:
+    reason_lower = reason.lower().strip()
+    specializations = None
+    for key, specs in REASON_TO_SPECIALIZATIONS.items():
+        if any(word in reason_lower for word in key.split(" / ")) or key in reason_lower:
+            specializations = specs
+            break
+    if not specializations:
+        specializations = ["General"]
+    return await db_get_doctors_by_specialization(specializations)
+
+
+def _doctor_works_on_date(doctor: dict, appointment_date: str) -> bool:
+    try:
+        weekday = datetime.strptime(appointment_date, "%Y-%m-%d").strftime("%A")
+    except (ValueError, TypeError):
+        return True
+    days = [d.strip() for d in doctor.get("available_days", "").split(",")]
+    return weekday in days
+
+
+async def _recommend_doctors_response(state: GraphState) -> str:
+    doctors = await _get_doctors_for_reason(state.reason_for_visit)
+
+    if state.appointment_date and state.appointment_time:
+        available = []
+        for doc in doctors:
+            if await db_check_availability(doc["name"], state.appointment_date, state.appointment_time, state.duration_minutes):
+                available.append(doc)
+        doctors_to_show = available
+        has_slot = True
+    else:
+        doctors_to_show = doctors
+        has_slot = False
+
+    if not doctors_to_show:
+        if has_slot:
+            names = ", ".join(d["name"] for d in doctors)
+            context = f"No doctors available at {state.appointment_date} {state.appointment_time}. Normally handle this: {names}."
+        else:
+            context = "No matching specialists found."
+    else:
+        context = "\n".join(
+            f"- {d['name']} ({d['specialization']}) — available {d['available_days']} {d['start_time']}–{d['end_time']}"
+            for d in doctors_to_show
+        )
+
+    prompt = (
+        f"You are a warm dental clinic receptionist. The patient's reason: '{state.reason_for_visit}'.\n"
+        f"Matching doctors:\n{context}\n\n"
+        f"{'Specific slot requested: ' + state.appointment_date + ' at ' + state.appointment_time + '.' if has_slot else 'No date/time given yet.'}\n\n"
+        f"Respond naturally in 2-3 sentences: lead with the single best doctor for this reason and why, "
+        f"mention a second specialist only if clearly relevant. "
+        f"{'Confirm who is free at that slot.' if has_slot else 'End by asking when works best for the patient.'} "
+        f"No bullet points, no numbering, no jargon."
+    )
+
+    response = await llm.ainvoke([HumanMessage(content=prompt)])
+    return response.content.strip()
+
+
+async def booking_node(state: GraphState) -> dict:
+    logger.info("Booking agent started.")
+
+    # Phase 1: name + phone
+    missing_contact = []
+    if not state.patient_name:
+        missing_contact.append("your full name")
+    if not state.phone_number:
+        missing_contact.append("your phone number")
+    if missing_contact:
+        logger.info("Booking request missing contact info: %s", missing_contact)
+        return {"response_message": f"Before I proceed, could I get {' and '.join(missing_contact)}?"}
+
+    # Phase 2: email + reason
+    missing_email = not state.invitee_email
+    missing_reason = not state.reason_for_visit
+    if missing_email or missing_reason:
+        logger.info("Booking request missing email/reason: email=%s reason=%s", missing_email, missing_reason)
+        if missing_email and missing_reason:
+            return {"response_message": f"Thanks! Could you also share your email address, and what brings you in?\n\n{REASON_MENU}"}
+        if missing_reason:
+            return {"response_message": f"Thanks! And what brings you in?\n\n{REASON_MENU}"}
+        return {"response_message": "Thanks! Could you also share your email address?"}
+
+    # Phase 3: no doctor yet — recommend
+    if not state.doctor_name:
+        candidates = await _get_doctors_for_reason(state.reason_for_visit)
+
+        if not candidates:
+            return {"response_message": "I couldn't find a specialist matching that reason — could you tell me a bit more about what's going on?"}
+
+
+        # agents/booking_agent.py — Phase 3 date-aware selection (replaces the day_matches block)
+        if not state.appointment_date:
+            response = await _recommend_doctors_response(state)
+            logger.info("Booking recommendation response: %s", response)
+            return {"response_message": response, "recommended_doctors": [d["name"] for d in candidates]}
+
+        weekday = datetime.strptime(state.appointment_date, "%Y-%m-%d").strftime("%A")
+        day_matches = [
+            d for d in candidates
+            if weekday in [day.strip() for day in d.get("available_days", "").split(",")]
+        ]
+
+        if not day_matches:
+            names = ", ".join(d["name"] for d in candidates)
+            if len(candidates) == 1:
+                return {"response_message": f"{candidates[0]['name']} doesn't work on {weekday}s. Could you try a different day?"}
+            return {"response_message": f"None of the doctors for this reason ({names}) work on {weekday}s. Could you try a different day?"}
+
+        if not state.appointment_time:
+            names = ", ".join(f"{d['name']} ({d['start_time']}–{d['end_time']})" for d in day_matches)
+            return {
+                "response_message": f"On {weekday}s, {names} {'is' if len(day_matches) == 1 else 'are'} available. What time works for you?",
+                "recommended_doctors": [d["name"] for d in day_matches],
+            }
+
+
+        available = []
+        for d in day_matches:
+            if await db_check_availability(d["name"], state.appointment_date, state.appointment_time, state.duration_minutes):
+                available.append(d)
+
+        if not available:
+            names = ", ".join(d["name"] for d in day_matches)
+            if len(day_matches) == 1:
+                return {"response_message": f"{day_matches[0]['name']} isn't free at {state.appointment_time} on {state.appointment_date}. Could you try a different time?"}
+            return {"response_message": f"None of {names} are free at {state.appointment_time} on {state.appointment_date}. Could you try a different time?"}
+
+        if len(available) > 1:
+            names = ", ".join(d["name"] for d in available)
+            return {
+                "response_message": f"Both {names} are free at {state.appointment_time} on {state.appointment_date} — who would you prefer?",
+                "recommended_doctors": [d["name"] for d in available],
+            }
+
+        d = available[0]
+        return {
+            "response_message": f"{d['name']} is free on {state.appointment_date} at {state.appointment_time} — shall I go ahead and book that for you?",
+            "suggested_alternative": d["name"],
+            "recommended_doctors": [d["name"]],
+        }
+
+    # Phase 4: doctor known, missing date/time
+    missing_booking = []
+    if not state.appointment_date:
+        missing_booking.append("appointment date")
+    if not state.appointment_time:
+        missing_booking.append("appointment time")
+    if missing_booking:
+        logger.info("Booking request missing scheduling fields: %s", missing_booking)
+        return {"response_message": f"Got it! Could you also share the {' and '.join(missing_booking)} for the appointment with {state.doctor_name}?"}
+
+    # Final guard
+    if not (state.patient_name and state.phone_number and state.invitee_email and state.reason_for_visit):
+        return {"response_message": "I still need your name, phone number, email, and reason for visit — could you share whichever is missing?"}
+
+    # Phase 5: direct DB calls
+    logger.info("Booking phase 5: checking availability for %s on %s at %s", state.doctor_name, state.appointment_date, state.appointment_time)
+
+    available = await db_check_availability(
+        state.doctor_name, state.appointment_date, state.appointment_time, state.duration_minutes
+    )
+
+    if not available:
+        candidates = await _get_doctors_for_reason(state.reason_for_visit)
+        candidate_names = [d["name"] for d in candidates]
+        alternative = await db_find_alternative(
+            state.doctor_name,
+            state.appointment_date,
+            state.appointment_time,
+            state.duration_minutes,
+            candidate_names=candidate_names,
+        )
+        if alternative:
+            return {
+                "response_message": (
+                    f"{state.doctor_name} isn't available on {state.appointment_date} at {state.appointment_time}. "
+                    f"However, {alternative} is free at that time — would you like to book with them instead?"
+                ),
+                "suggested_alternative": alternative,
+            }
+        explanation = await _explain_unavailable_with_specialist(
+            state.doctor_name, state.appointment_date, state.appointment_time,
+            state.duration_minutes, candidate_names,
+        )
+        base = f"Unfortunately {state.doctor_name} isn't available at that time, and no other doctors matching your needs are free then either."
+        if explanation:
+            return {"response_message": f"{base} {explanation}"}
+        return {"response_message": f"{base} Could you try a different date or time?"}
+
+    # ── CONFIRM BEFORE COMMITTING ────────────────────────────────────────────
+    # Previously this jumped straight to db_create_appointment the moment a
+    # slot checked out free — no "shall I go ahead?" step, even when the
+    # doctor/date/time were resolved implicitly (e.g. the model inferring
+    # doctor_name from a single earlier recommendation) rather than through
+    # an explicit user confirmation. Only proceed once the CURRENT message is
+    # itself a bare affirmative ("yes"/"ok"/"go ahead") — supervisor.py's
+    # fast path already resolves everything correctly on that "yes" turn
+    # without an LLM call, so this check alone is enough to distinguish
+    # "just told you a new slot" from "confirming the slot you showed me".
+    if not _AFFIRMATIVE_PATTERN.match(state.user_message):
+        return {
+            "response_message": (
+                f"{state.doctor_name} is free on {state.appointment_date} at "
+                f"{state.appointment_time} — shall I go ahead and book that for you?"
+            ),
+            "suggested_alternative": state.doctor_name,
+        }
+
+    appointment_id = await db_create_appointment(
+        doctor_name=state.doctor_name,
+        patient_name=state.patient_name,
+        patient_email=state.invitee_email,
+        appointment_date=state.appointment_date,
+        appointment_time=state.appointment_time,
+        duration_minutes=state.duration_minutes,
+        phone_number=state.phone_number,
+        reason_for_visit=state.reason_for_visit,
+        sender_id=state.sender_id,
+    )
+    logger.info("Appointment created with id %s", appointment_id)
+
+    email_result = await send_invite_email.ainvoke({
+        "to_email": state.invitee_email,
+        "doctor_name": state.doctor_name,
+        "booking_date": state.appointment_date,
+        "booking_time": state.appointment_time,
+        "appointment_id": appointment_id,
+    })
+    logger.info("Email result: %s", email_result)
+
+    return {
+        "response_message": (
+            f"You're all set! Your appointment with {state.doctor_name} is confirmed for "
+            f"{state.appointment_date} at {state.appointment_time} (appointment ID: {appointment_id}). "
+            f"A confirmation email has been sent to {state.invitee_email}."
+        ),
+        "appointment_id": appointment_id,
+        "suggested_alternative": None,
+        "intent": None,
+    }
+</file>
+
+<file path="agents/cancellation_agent.py">
+import logging
+from langchain_openai import ChatOpenAI
+from state import GraphState
+from db import (
+    cancel_appointment_with_ownership as db_cancel_with_ownership,
+    get_appointment_by_id as db_get_appointment_by_id,
+)
+from tools.email_sender import send_cancellation_email
+from config import MODEL_NAME
+from agents.booking_agent import booking_node
+
+logger = logging.getLogger(__name__)
+llm = ChatOpenAI(model=MODEL_NAME, temperature=0)
+
+
+async def cancellation_node(state: GraphState) -> dict:
+    logger.info("Cancellation agent started.")
+
+    if not state.appointment_id:
+        return {"response_message": "Sure — could you give me the appointment ID you'd like to cancel? You can find it in your confirmation email."}
+
+    if not state.sender_id:
+        return {"response_message": "I need to verify your identity before cancelling. Could you share the email you used when booking?"}
+
+    # Look up appointment
+    appt = await db_get_appointment_by_id(state.appointment_id)
+    if not appt:
+        return {"response_message": f"I couldn't find an appointment with ID {state.appointment_id}. Please double-check the ID."}
+
+    # Cancel with sender_id ownership check
+    result = await db_cancel_with_ownership(state.appointment_id, state.sender_id)
+
+    if not result["success"]:
+        if result["reason"] == "not_owner":
+            return {"response_message": f"Appointment {state.appointment_id} doesn't appear to belong to your account."}
+        if result["reason"] == "already_cancelled":
+            return {"response_message": f"Appointment {state.appointment_id} has already been cancelled."}
+        return {"response_message": f"Could not cancel appointment {state.appointment_id}. Please try again or contact the clinic."}
+
+    logger.info("Appointment %s cancelled by sender %s.", state.appointment_id, state.sender_id)
+
+    # Send cancellation email
+    try:
+        await send_cancellation_email.ainvoke({
+            "to_email": appt["patient_email"],
+            "doctor_name": appt["doctor_name"],
+            "booking_date": appt["appointment_date"],
+            "booking_time": appt["appointment_time"],
+            "appointment_id": state.appointment_id,
+        })
+        logger.info("Cancellation email sent to %s", appt["patient_email"])
+        email_note = f" A cancellation confirmation has been sent to {appt['patient_email']}."
+    except Exception as e:
+        logger.error("Failed to send cancellation email: %s", e)
+        email_note = ""
+
+    cancel_response = (
+        f"Your appointment with {appt['doctor_name']} on {appt['appointment_date']} "
+        f"at {appt['appointment_time']} (ID: {state.appointment_id}) has been successfully cancelled."
+        f"{email_note}"
+    )
+
+    # Chain into booking if rebook requested
+    if state.rebook_requested:
+        logger.info("Compound cancel-and-rebook — chaining into booking_node. doctor_name=%s", state.doctor_name)
+        rebook_state = state.model_copy(update={
+            "appointment_id": None,
+            "cancellation_confirmed": True,
+            "rebook_requested": False,
+        })
+        booking_update = await booking_node(rebook_state)
+        booking_update["response_message"] = f"{cancel_response}\n\n{booking_update.get('response_message', '')}"
+        booking_update["cancellation_confirmed"] = True
+        booking_update["rebook_requested"] = False
+        return booking_update
+
+    return {
+        "cancellation_confirmed": True,
+        "appointment_id": None,
+        "intent": None,
+        "rebook_requested": False,
+        "response_message": cancel_response,
+    }
+</file>
+
+<file path="agents/scheduling_agent.py">
+import logging
+import re
+from datetime import datetime
+from state import GraphState
+from db import (
+    check_doctor_availability as db_check_availability,
+    check_doctor_availability_excluding as db_check_excluding,
+    reschedule_appointment as db_reschedule,
+    find_alternative_doctor as db_find_alternative,
+    get_all_doctors as db_get_all_doctors,
+    get_doctor_schedule as db_get_doctor_schedule,
+    get_doctors_by_specialization as db_get_doctors_by_specialization,
+    get_doctor_specialization as db_get_doctor_specialization,
+    get_appointment_by_id as db_get_appointment_by_id,
+    get_doctor_day_info as db_get_doctor_day_info,
+)
+from tools.email_sender import send_reschedule_email
+
+logger = logging.getLogger(__name__)
+
+
+def _format_time_range(time_str: str, duration_minutes: int) -> str:
+    start_h, start_m = int(time_str[:2]), int(time_str[3:])
+    total = start_h * 60 + start_m + duration_minutes
+    end_h, end_m = divmod(total, 60)
+    return f"{time_str}\u2013{end_h:02d}:{end_m:02d}"
+
+
+def _to_minutes(time_str: str) -> int:
+    return int(time_str[:2]) * 60 + int(time_str[3:])
+
+
+def _to_hhmm(minutes: int) -> str:
+    h, m = divmod(minutes, 60)
+    return f"{h:02d}:{m:02d}"
+
+
+def _compute_open_slots(
+    start_time: str, end_time: str, duration_minutes: int, bookings: list[dict], step_minutes: int = 30, limit: int = 5,
+) -> list[str]:
+    """Walk the doctor's working hours in step_minutes increments and return
+    up to `limit` start times that don't overlap any existing booking. This
+    is what actually lets us say "she's free at 09:00, 10:30, 14:00" instead
+    of just listing what's already booked and leaving the patient to do the
+    subtraction themselves."""
+    start_mins = _to_minutes(start_time)
+    end_mins = _to_minutes(end_time)
+    booked_ranges = [(_to_minutes(b["time"]), _to_minutes(b["time"]) + b["duration"]) for b in bookings]
+
+    slots = []
+    t = start_mins
+    while t + duration_minutes <= end_mins and len(slots) < limit:
+        slot_end = t + duration_minutes
+        overlaps = any(t < be and slot_end > bs for bs, be in booked_ranges)
+        if not overlaps:
+            slots.append(_to_hhmm(t))
+        t += step_minutes
+    return slots
+
+
+async def _explain_unavailable_with_specialist(
+    exclude_doctor: str,
+    appointment_date: str,
+    appointment_time: str,
+    duration_minutes: int,
+    candidate_names: list[str] | None,
+) -> str | None:
+    """
+    When no same-specialty doctor is free at the EXACT requested slot, check
+    EVERY same-specialty candidate who works that weekday (not just the
+    first one found — that was the bug: a single `return` inside the loop
+    meant a second or third available doctor never got surfaced) and, for
+    each, list their actual open time slots that day so the patient has
+    concrete options instead of a vague "try again".
+    Returns a ready-to-use sentence, or None if no same-specialty doctor
+    works that weekday at all.
+    """
+    if not candidate_names:
+        return None
+
+    doctor_summaries = []
+    for name in candidate_names:
+        if name == exclude_doctor:
+            continue
+        day_info = await db_get_doctor_day_info(name, appointment_date)
+        if not day_info or not day_info["works_that_day"]:
+            continue
+
+        open_slots = _compute_open_slots(
+            day_info["start_time"], day_info["end_time"], duration_minutes, day_info["bookings"],
+        )
+        if open_slots:
+            slots_text = ", ".join(open_slots)
+            doctor_summaries.append(f"{day_info['name']} is free at {slots_text} that day")
+        else:
+            doctor_summaries.append(f"{day_info['name']} works {day_info['weekday']}s but is fully booked that day")
+
+    if not doctor_summaries:
+        return None
+
+    return " ".join(doctor_summaries) + ". Would any of those work?"
+
+
+async def _resolve_specialization(state: GraphState, fallback_doctor_name: str | None) -> str | None:
+    """
+    Get the specialization to filter alternative-doctor candidates by.
+    Prefers state.specialization_needed (set when the patient stated a reason
+    for visit this conversation). Falls back to looking up the specialization
+    of `fallback_doctor_name` — normally the doctor already on the existing
+    appointment — since reschedule turns frequently never restate a reason
+    for visit at all. Without this fallback, specialization_needed stays
+    None, candidate_names ends up empty, and BOTH db_find_alternative and
+    _explain_unavailable_with_specialist silently skip same-specialty
+    matching — that's why "another doctor" requests previously produced a
+    bare "no other doctors are free" instead of a specific explanation.
+    """
+    if state.specialization_needed:
+        return state.specialization_needed
+    if fallback_doctor_name:
+        return await db_get_doctor_specialization(fallback_doctor_name)
+    return None
+
+
+# "I don't care which doctor" phrasing — recognized directly off the raw
+# user message so scheduling_node can act on it the turn it's said, rather
+# than needing a new state field to distinguish "never answered yet" from
+# "explicitly said no preference" (both look like doctor_name=None).
+_ANY_DOCTOR_PATTERN = re.compile(
+    r"^\s*(whoever'?s? (is )?free|any(one|body)?( doctor)?|no preference|"
+    r"doesn'?t matter|don'?t (know|mind|care)|dont know|dunno|first available)\s*[!.]*\s*$",
+    re.IGNORECASE,
+)
+
+# Phrasing that signals "I want a DIFFERENT doctor" without naming one, e.g.
+# "another doctor", "someone else", "switch doctors". This is broader than
+# _ANY_DOCTOR_PATTERN (which only matches "I have no preference at all"
+# phrasing) and needs to be matched too — otherwise "another doctor is
+# there?" falls through to a generic "which doctor would you like?" prompt
+# instead of proactively searching for and explaining an alternative. Kept
+# in sync with the same pattern in supervisor.py, which uses it to decide
+# whether a CLEAR doctor_name sentinel is genuine.
+_DOCTOR_CHANGE_SIGNAL_PATTERN = re.compile(
+    r"\b(another|different|someone else|switch|change (my |the )?doctor|new doctor)\b",
+    re.IGNORECASE,
+)
+
+# Same pattern as supervisor.py's _AFFIRMATIVE_PATTERN. Used here to gate
+# the reschedule confirmation step below — kept in sync manually.
+_AFFIRMATIVE_PATTERN = re.compile(
+    r'^\s*(ok(ay)?|yes|yeah|yep|sure|go ahead|sounds good|confirm(ed)?)\s*[!.]*\s*$',
+    re.IGNORECASE,
+)
+
+
+async def scheduling_node(state: GraphState) -> dict:
+    logger.info("Scheduling agent started.")
+
+    # ── RESCHEDULE ──────────────────────────────────────────────────────────
+    if state.intent == "reschedule":
+
+        if not state.appointment_id:
+            return {"response_message": "Sure, I can help reschedule! Could you share the appointment ID? You'll find it in your confirmation email."}
+
+        if not state.sender_id:
+            return {
+                "appointment_id": state.appointment_id,
+                "response_message": "I need to verify your identity before rescheduling. Could you share the email you used when booking?",
+            }
+
+        # Fetched once up front (rather than only after doctor_name is
+        # resolved) so BOTH the "no doctor named yet" branch and the
+        # same-slot guard below can use it — this also lets us derive the
+        # original doctor's specialization when the patient hasn't restated
+        # a reason for visit this conversation (see _resolve_specialization).
+        existing_appt = await db_get_appointment_by_id(state.appointment_id)
+        if not existing_appt:
+            return {"response_message": f"I couldn't find an appointment with ID {state.appointment_id}. Please double-check the ID."}
+
+        if not state.appointment_date or not state.appointment_time:
+            if state.appointment_date and not state.appointment_time:
+                msg = f"What time on {state.appointment_date} works for you?"
+            elif state.appointment_time and not state.appointment_date:
+                msg = f"What date works for {state.appointment_time}?"
+            else:
+                msg = "What date and time would you like to reschedule to? Also let me know if you'd like to keep the same doctor or switch to someone else."
+            return {
+                "appointment_id": state.appointment_id,
+                "response_message": msg,
+            }
+
+        if not state.doctor_name:
+            wants_different_doctor = (
+                _ANY_DOCTOR_PATTERN.match(state.user_message)
+                or _DOCTOR_CHANGE_SIGNAL_PATTERN.search(state.user_message)
+            )
+            if wants_different_doctor:
+                # User explicitly said they don't care who, or asked for a
+                # different doctor without naming one — don't re-ask the
+                # same question forever. Search for an available doctor
+                # matching the original specialty/reason right now, instead
+                # of requiring a name.
+                specialization_needed = await _resolve_specialization(state, existing_appt["doctor_name"])
+                candidate_names = None
+                if specialization_needed:
+                    same_specialty = await db_get_doctors_by_specialization([specialization_needed])
+                    candidate_names = [d["name"] for d in same_specialty]
+
+                pool = candidate_names if candidate_names else await db_get_all_doctors()
+
+                chosen = None
+                for name in pool:
+                    if await db_check_excluding(
+                        name, state.appointment_date, state.appointment_time,
+                        state.duration_minutes, exclude_appointment_id=state.appointment_id,
+                    ):
+                        chosen = name
+                        break
+
+                if not chosen:
+                    explanation = await _explain_unavailable_with_specialist(
+                        existing_appt["doctor_name"], state.appointment_date, state.appointment_time,
+                        state.duration_minutes, candidate_names,
+                    )
+                    base = (
+                        f"No doctors are free on {state.appointment_date} at {state.appointment_time}."
+                    )
+                    return {
+                        "appointment_id": state.appointment_id,
+                        "appointment_date": state.appointment_date,
+                        "appointment_time": state.appointment_time,
+                        "response_message": (
+                            f"{base} {explanation}" if explanation
+                            else f"{base} Could you try a different date or time?"
+                        ),
+                    }
+
+                return {
+                    "appointment_id": state.appointment_id,
+                    "appointment_date": state.appointment_date,
+                    "appointment_time": state.appointment_time,
+                    "response_message": (
+                        f"{chosen} is free on {state.appointment_date} at {state.appointment_time} "
+                        f"— shall I go ahead and reschedule you to them?"
+                    ),
+                    "suggested_alternative": chosen,
+                }
+
+            return {
+                "appointment_id": state.appointment_id,
+                "appointment_date": state.appointment_date,
+                "appointment_time": state.appointment_time,
+                "response_message": "Which doctor would you like to reschedule with? I can keep the same one or find someone new if you prefer.",
+            }
+
+        # ── GUARD: refuse to "reschedule" onto the appointment's current slot ──
+        # state.appointment_date/time/doctor_name may simply be carried-over
+        # values describing the EXISTING booking (they're sticky across turns),
+        # not a new slot the user actually asked for. Compare against the real
+        # row before touching the DB or sending any email.
+        if (
+            state.appointment_date == existing_appt["appointment_date"]
+            and state.appointment_time == existing_appt["appointment_time"]
+            and state.doctor_name == existing_appt["doctor_name"]
+        ):
+            return {
+                "appointment_id": state.appointment_id,
+                "response_message": (
+                    f"Appointment {state.appointment_id} is currently set for "
+                    f"{existing_appt['appointment_date']} at {existing_appt['appointment_time']} "
+                    f"with {existing_appt['doctor_name']}. What new date, time, or doctor would you "
+                    f"like to change it to?"
+                ),
+            }
+
+        specialization_needed = await _resolve_specialization(state, existing_appt["doctor_name"])
+
+        # ── WEEKDAY GUARD: check the doctor's working days BEFORE the generic ──
+        # slot-availability check. db_check_excluding conflates "wrong weekday"
+        # and "double-booked" into a single False, which produces a vague
+        # "isn't available" message even when the real reason is that the
+        # doctor simply doesn't work that day. Checking this separately lets
+        # us tell the user exactly why, mirroring booking_agent.py's Phase 3
+        # day-matching messaging instead of leaving them to guess and repeat
+        # the same invalid day.
+        schedule = await db_get_doctor_schedule(state.doctor_name)
+        if schedule:
+            weekday = datetime.strptime(state.appointment_date, "%Y-%m-%d").strftime("%A")
+            working_days = [d.strip() for d in schedule["available_days"].split(",")]
+            if weekday not in working_days:
+                candidate_names = None
+                if specialization_needed:
+                    same_specialty = await db_get_doctors_by_specialization([specialization_needed])
+                    candidate_names = [d["name"] for d in same_specialty]
+
+                alternative = await db_find_alternative(
+                    state.doctor_name,
+                    state.appointment_date,
+                    state.appointment_time,
+                    state.duration_minutes,
+                    candidate_names=candidate_names,
+                )
+                if alternative:
+                    return {
+                        "appointment_id": state.appointment_id,
+                        "response_message": (
+                            f"{schedule['name']} is only available {schedule['available_days']} and "
+                            f"doesn't work on {weekday}s. {alternative} is free on {state.appointment_date} "
+                            f"at {state.appointment_time} instead — would you like to reschedule with them?"
+                        ),
+                        "suggested_alternative": alternative,
+                    }
+
+                explanation = await _explain_unavailable_with_specialist(
+                    state.doctor_name, state.appointment_date, state.appointment_time,
+                    state.duration_minutes, candidate_names,
+                )
+                base = (
+                    f"{schedule['name']} is only available {schedule['available_days']} and doesn't "
+                    f"work on {weekday}s."
+                )
+                if explanation:
+                    return {
+                        "appointment_id": state.appointment_id,
+                        "response_message": f"{base} {explanation}",
+                    }
+                return {
+                    "appointment_id": state.appointment_id,
+                    "response_message": f"{base} Would you like to try one of those days instead?",
+                }
+
+        # Check availability excluding this appointment
+        available = await db_check_excluding(
+            state.doctor_name,
+            state.appointment_date,
+            state.appointment_time,
+            state.duration_minutes,
+            exclude_appointment_id=state.appointment_id,
+        )
+
+        if not available:
+            # Restrict alternatives to the same specialty as the original
+            # booking, mirroring booking_agent.py's candidate_names pattern.
+            # Without this, find_alternative_doctor() falls back to searching
+            # ALL doctors, which can surface a clinically-mismatched
+            # specialist (e.g. a Periodontist offered in place of a General
+            # Dentistry appointment).
+            candidate_names = None
+            if specialization_needed:
+                same_specialty = await db_get_doctors_by_specialization([specialization_needed])
+                candidate_names = [d["name"] for d in same_specialty]
+
+            alternative = await db_find_alternative(
+                state.doctor_name,
+                state.appointment_date,
+                state.appointment_time,
+                state.duration_minutes,
+                candidate_names=candidate_names,
+            )
+            if alternative:
+                return {
+                    "appointment_id": state.appointment_id,
+                    "response_message": (
+                        f"{state.doctor_name} isn't available on {state.appointment_date} at {state.appointment_time}. "
+                        f"However, {alternative} is free at that time — would you like to reschedule with them instead?"
+                    ),
+                    "suggested_alternative": alternative,
+                }
+
+            explanation = await _explain_unavailable_with_specialist(
+                state.doctor_name, state.appointment_date, state.appointment_time,
+                state.duration_minutes, candidate_names,
+            )
+            base = f"{state.doctor_name} isn't available on {state.appointment_date} at {state.appointment_time}."
+            if explanation:
+                return {
+                    "appointment_id": state.appointment_id,
+                    "response_message": f"{base} {explanation}",
+                }
+            return {
+                "appointment_id": state.appointment_id,
+                "response_message": f"{base} No other doctors are free then either. Could you try a different date or time?",
+            }
+
+        # ── CONFIRM BEFORE COMMITTING ────────────────────────────────────────
+        # Previously this jumped straight to db_reschedule the moment the slot
+        # was free — no "shall I go ahead?" step, unlike the booking flow.
+        # Mirror booking_agent.py's Phase 3 pattern: the FIRST time we find
+        # this doctor free at this new date/time, ask before touching the DB.
+        # Only proceed once the user's CURRENT message is itself a bare
+        # affirmative ("yes"/"ok"/"go ahead") — which is exactly the reply to
+        # that question. supervisor.py's fast path already resolves the
+        # doctor/date/time correctly on that "yes" turn without an LLM call,
+        # so this check is enough to distinguish "just told you the new slot"
+        # from "confirming the slot you already showed me".
+        if not _AFFIRMATIVE_PATTERN.match(state.user_message):
+            return {
+                "appointment_id": state.appointment_id,
+                "appointment_date": state.appointment_date,
+                "appointment_time": state.appointment_time,
+                "response_message": (
+                    f"{state.doctor_name} is free on {state.appointment_date} at "
+                    f"{state.appointment_time} — shall I go ahead and reschedule you?"
+                ),
+                "suggested_alternative": state.doctor_name,
+            }
+
+        # Reschedule directly using sender_id for ownership
+        result = await db_reschedule(
+            appointment_id=state.appointment_id,
+            sender_id=state.sender_id,
+            new_doctor_name=state.doctor_name,
+            new_date=state.appointment_date,
+            new_time=state.appointment_time,
+            new_duration_minutes=state.duration_minutes,
+        )
+
+        if not result["success"]:
+            if result["reason"] == "not_owner":
+                return {"response_message": f"Appointment {state.appointment_id} doesn't appear to belong to your account."}
+            if result["reason"] == "already_cancelled":
+                return {"response_message": f"Appointment {state.appointment_id} is already cancelled and can't be rescheduled."}
+            if result["reason"] == "doctor_not_found":
+                return {"response_message": f"I couldn't find a doctor matching '{state.doctor_name}'."}
+            if result["reason"] == "unavailable":
+                return {"response_message": f"{state.doctor_name} is not available on {state.appointment_date} at {state.appointment_time}."}
+            return {"response_message": f"Could not reschedule appointment {state.appointment_id}. Please try again."}
+
+        appt = result["appointment"]
+        logger.info("Appointment %s rescheduled.", state.appointment_id)
+
+        try:
+            await send_reschedule_email.ainvoke({
+                "to_email": state.invitee_email,
+                "doctor_name": appt["doctor_name"],
+                "new_date": appt["appointment_date"],
+                "new_time": appt["appointment_time"],
+                "appointment_id": appt["id"],
+            })
+            logger.info("Reschedule email sent to %s", state.invitee_email)
+            email_note = f" A confirmation email has been sent to {state.invitee_email}."
+        except Exception as e:
+            logger.error("Failed to send reschedule email: %s", e)
+            email_note = ""
+
+        return {
+            "response_message": (
+                f"Done! Your appointment (ID: {appt['id']}) has been rescheduled to "
+                f"{appt['appointment_date']} at {appt['appointment_time']} with {appt['doctor_name']}."
+                f"{email_note}"
+            ),
+            "appointment_id": appt["id"],
+            "suggested_alternative": None,
+            "intent": None,
+        }
+
+    # ── CHECK AVAILABILITY ───────────────────────────────────────────────────
+    elif state.intent == "check_availability":
+
+        if not state.doctor_name:
+            if not state.appointment_date:
+                return {"response_message": "Please specify a date to check doctor availability."}
+
+            if state.specialization_needed:
+                doctors = await db_get_doctors_by_specialization([state.specialization_needed])
+                doctor_names = [d["name"] for d in doctors]
+            else:
+                doctor_names = await db_get_all_doctors()
+
+            weekday = datetime.strptime(state.appointment_date, "%Y-%m-%d").strftime("%A")
+
+            if not state.appointment_time:
+                # Broad query ("who's free Saturday?") — match by working day only
+                free_that_day = []
+                for doctor in doctor_names:
+                    schedule = await db_get_doctor_schedule(doctor)
+                    if schedule and weekday in [d.strip() for d in schedule["available_days"].split(",")]:
+                        free_that_day.append(f"{doctor} ({schedule['start_time']}–{schedule['end_time']})")
+
+                if free_that_day:
+                    return {"response_message": f"On {weekday}s, the following doctors are available: {', '.join(free_that_day)}."}
+                return {"response_message": f"No doctors work on {weekday}s. Could you try a different day?"}
+
+            available = []
+            for doctor in doctor_names:
+                if await db_check_availability(doctor, state.appointment_date, state.appointment_time, state.duration_minutes):
+                    available.append(doctor)
+
+            if available:
+                return {"response_message": f"The following doctors are available on {state.appointment_date} at {state.appointment_time}: {', '.join(available)}."}
+            return {"response_message": f"No doctors are available on {state.appointment_date} at {state.appointment_time} for {state.specialization_needed or 'your reason'}."}
+
+        schedule = await db_get_doctor_schedule(state.doctor_name)
+        if not schedule:
+            return {"response_message": f"I couldn't find a doctor matching '{state.doctor_name}'."}
+
+        if not state.appointment_date and not state.appointment_time:
+            return {"response_message": f"{schedule['name']} is available on {schedule['available_days']} from {schedule['start_time']} to {schedule['end_time']}."}
+
+        if state.appointment_date and not state.appointment_time:
+            day_of_week = datetime.strptime(state.appointment_date, "%Y-%m-%d").strftime("%A")
+            if day_of_week in schedule["available_days"].split(","):
+                return {"response_message": f"Yes, {schedule['name']} is available on {state.appointment_date} from {schedule['start_time']} to {schedule['end_time']}."}
+            return {"response_message": f"{schedule['name']} does not work on {state.appointment_date} ({day_of_week}s)."}
+
+        if not state.appointment_date and state.appointment_time:
+            return {"response_message": f"Please specify a date to check availability for {state.doctor_name} at {state.appointment_time}."}
+
+        available = await db_check_availability(
+            state.doctor_name, state.appointment_date, state.appointment_time, state.duration_minutes
+        )
+        if available:
+            return {"response_message": f"{state.doctor_name} is available on {state.appointment_date} at {state.appointment_time}."}
+        return {"response_message": f"{state.doctor_name} is not available on {state.appointment_date} at {state.appointment_time}."}
+
+    # ── FALLBACK ─────────────────────────────────────────────────────────────
+    else:
+        if not state.doctor_name or not state.appointment_date or not state.appointment_time:
+            return {"response_message": "Please specify the doctor, date, and time so I can find an alternative."}
+        alternative = await db_find_alternative(
+            state.doctor_name, state.appointment_date, state.appointment_time, state.duration_minutes
+        )
+        if alternative:
+            return {
+                "response_message": f"{state.doctor_name} is unavailable at that time. {alternative} is available instead — would you like to book with them?",
+                "suggested_alternative": alternative,
+            }
+        return {"response_message": f"No doctors are available on {state.appointment_date} at {state.appointment_time}. Could you try a different time?"}
+</file>
+
+<file path="agents/supervisor.py">
+import logging
+import re
+from datetime import date, timedelta
+from typing import Literal, Optional
+
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage, HumanMessage
+from pydantic import BaseModel, Field
+
+from state import GraphState
+from config import MODEL_NAME
+
+logger = logging.getLogger(__name__)
+llm = ChatOpenAI(model=MODEL_NAME, temperature=0)
+
+
+class SupervisorOutput(BaseModel):
+    intent: Literal["book", "cancel", "reschedule", "check_availability", "knowledge", None] = Field(
+        default=None,
+        description="User intent. Null only if unrelated to clinic AND nothing in progress.",
+    )
+    doctor_name: Optional[str] = Field(
+        default=None,
+        description="Doctor named in THIS message only, never from history. Null = carry forward. Named doctor beats clear_doctor.",
+    )
+    clear_doctor: bool = Field(
+        default=False,
+        description="True = wipe pinned doctor, no replacement named (e.g. 'whoever's free'). Only for book/reschedule/cancel; never with doctor_name set.",
+    )
+    appointment_date: Optional[str] = Field(
+        default=None,
+        description="Explicit date as YYYY-MM-DD. Null if relative/weekday phrase (use relative_date_phrase instead).",
+    )
+    relative_date_phrase: Optional[str] = Field(
+        default=None,
+        description="Relative date phrase verbatim (e.g. 'thursday', 'tomorrow'). Do not resolve to a date yourself.",
+    )
+    appointment_time: Optional[str] = Field(default=None, description="Time, 24h HH:MM.")
+    duration_minutes: Optional[int] = Field(default=None, description="Duration in minutes, if stated this turn.")
+    patient_name: Optional[str] = Field(default=None, description="Patient name from this message only. Never an email.")
+    phone_number: Optional[str] = Field(default=None, description="Phone number from this message.")
+    reason_for_visit: Optional[str] = Field(default=None, description="Visit reason from this message.")
+    specialization_needed: Optional[str] = Field(
+        default=None,
+        description="Short specialization label only (e.g. 'General', 'Cosmetic'), matched against DB — not the full clinical name.",
+    )
+    invitee_email: Optional[str] = Field(default=None, description="Email from this message.")
+    appointment_id: Optional[int] = Field(
+        default=None,
+        description="Integer ID ONLY if user explicitly states it this turn (e.g. '#7'). Never inferred/remembered; code handles carry-forward.",
+    )
+    rebook_requested: bool = Field(
+        default=False,
+        description="True only if user wants to cancel AND rebook in the same message.",
+    )
+    fallback_response: Optional[str] = Field(
+        default=None,
+        description="Only when intent is null: 1-2 sentence front-desk reply mentioning booking/cancel/reschedule/availability/clinic Q&A help. Else null.",
+    )
+
+
+structured_llm = llm.with_structured_output(SupervisorOutput, include_raw=True)
+
+# Running counters, logged on every call so you can see the split between
+# calls that never hit the API, calls that hit it but were cache-discounted,
+# and calls that paid full price. Not persisted — resets on process restart;
+# swap for a proper metrics backend if you need it across restarts.
+_call_stats = {"fast_path": 0, "llm_call": 0, "cached_tokens_total": 0, "prompt_tokens_total": 0}
+
+
+def _log_llm_usage(response) -> None:
+    """Pull token/cache usage off the LLM response and log it.
+
+    OpenAI returns prompt_tokens_details.cached_tokens on cache hits, surfaced
+    by langchain-openai in response.usage_metadata (and mirrored in
+    response.response_metadata['token_usage']). Anthropic models expose the
+    equivalent via cache_read_input_tokens in usage_metadata — this reads
+    whichever fields are present so it works either way.
+    """
+    usage = getattr(response, "usage_metadata", None) or {}
+    prompt_tokens = usage.get("input_tokens") or usage.get("prompt_tokens") or 0
+
+    cached_tokens = 0
+    details = usage.get("input_token_details") or {}
+    if details:
+        cached_tokens = details.get("cache_read") or details.get("cached_tokens") or 0
+    if not cached_tokens:
+        raw_details = (
+            getattr(response, "response_metadata", {})
+            .get("token_usage", {})
+            .get("prompt_tokens_details", {})
+        )
+        cached_tokens = raw_details.get("cached_tokens", 0)
+
+    _call_stats["llm_call"] += 1
+    _call_stats["prompt_tokens_total"] += prompt_tokens
+    _call_stats["cached_tokens_total"] += cached_tokens
+
+    cache_pct = (cached_tokens / prompt_tokens * 100) if prompt_tokens else 0
+    logger.info(
+        "Supervisor LLM call #%d: prompt_tokens=%d cached_tokens=%d (%.0f%% cached) | "
+        "running totals: fast_path_skips=%d llm_calls=%d avg_cache_rate=%.0f%%",
+        _call_stats["llm_call"], prompt_tokens, cached_tokens, cache_pct,
+        _call_stats["fast_path"], _call_stats["llm_call"],
+        (_call_stats["cached_tokens_total"] / _call_stats["prompt_tokens_total"] * 100)
+        if _call_stats["prompt_tokens_total"] else 0,
+    )
+
+
+# ---------------------------------------------------------------------------
+# PROMPT CACHING: this block is split in two on purpose.
+#
+# STATIC_INSTRUCTIONS never changes — no {placeholders}, byte-for-byte
+# identical on every call, forever. OpenAI's prompt cache recognizes it after
+# the first call and charges roughly half price for it on every call after
+# that (Anthropic/Claude models cache automatically the same way; OpenAI
+# needs the identical prefix to repeat, which this guarantees).
+#
+# DYNAMIC_CONTEXT_TEMPLATE holds everything that changes turn-to-turn (prev
+# state, today's date, recent history). It's small (~100 tokens) and always
+# billed at full price, but it's cheap precisely because we kept it separate
+# from the ~1000-token static block instead of gluing them into one string.
+# ---------------------------------------------------------------------------
+
+STATIC_INSTRUCTIONS = """
+You are a dental clinic appointment supervisor. Extract intent and fields from the user message.
+The model backing you is capable of reasoning — apply the rules below with judgment, not literal pattern-matching.
+
+# INTENT
+- book: user wants an appointment, even without a named doctor.
+- reschedule: ONLY when an existing appointment is already confirmed/booked (appointment ID or clear reference to a prior booking present). A date/time/doctor change to a booking still in progress (nothing confirmed yet) stays "book" even if phrased "instead"/"actually"/"can you make it" — don't infer reschedule from phrasing alone.
+- cancel: user wants to cancel; if they also want to rebook, set rebook_requested=true.
+- check_availability: asks about a doctor's availability or free slots.
+- knowledge: general clinic questions, follow-ups about an existing booking, or questions about the user's own known details (name/email/phone/doctor/time). Never null.
+- null: only if unrelated to the clinic AND nothing was already in progress.
+- CONTINUITY: a bare follow-up answer (name, phone, email, date, time, reason) keeps Previous State's intent — don't null it for lacking booking language.
+- ACTIVE APPOINTMENT: if Previous State appointment_id is set, any further change to its date/time/doctor — even vague ("another doctor", "someone else") — stays reschedule on that SAME appointment_id (clear_doctor=true if no name given). Switch to cancel only on an explicit cancellation word ("cancel", "cancel it", "scrap that").
+
+# DOCTOR NAME
+- Set doctor_name only from a name in the CURRENT message, or from a plain confirmation ("yes"/"ok"/"go ahead") when suggested_alternative is set — in that case doctor_name=suggested_alternative, suggested_alternative=null, and intent stays whatever it already was (book or reschedule; never force it to "book"). Never infer a name from history or the assistant's prior message.
+- Otherwise carry forward doctor_name from Previous State.
+- clear_doctor=true only for book/reschedule/cancel, when the user wants a different/unspecified doctor without naming one ("whoever's free", "doesn't matter"). Never true for knowledge/check_availability. A named doctor always beats clear_doctor.
+- "let's go with Dr X" → intent=book, doctor_name=Dr X, suggested_alternative=null.
+- A question about suggested_alternative ("does she specialize in X") → intent=knowledge, doctor_name=suggested_alternative.
+- Compound cancel+rebook needs an explicit cancellation word THIS turn ("cancel and book another doctor"). "Another doctor" alone, no cancellation word, is a reschedule doctor-change (see ACTIVE APPOINTMENT), not a cancellation.
+- A new date/time with no doctor mentioned keeps the existing doctor_name — don't switch to suggested_alternative on its own.
+
+# SPECIALIZATION
+Infer from reason_for_visit; output ONLY the exact label below, nothing appended — these are matched directly against the DB: Emergency Dentistry (urgent pain/trauma), Endodontics (root canal/infected tooth), General (checkup/cleaning/vague), Cosmetic (whitening/veneers/smile), Orthodontics (braces/aligners), Oral Surgery (wisdom tooth/extraction), Implantology (implants), Paediatric (child), Periodontics (gum disease), Prosthodontics (crowns/bridges/dentures), Dental Radiology (X-rays/imaging). Vague reason → General. No reason given → keep Previous State value.
+
+# DATE / TIME
+- Explicit calendar date → appointment_date=YYYY-MM-DD, relative_date_phrase=null.
+- Weekday / "next X" / "this X" / "today" / "tomorrow" → relative_date_phrase=verbatim phrase, appointment_date=null. Never compute the date yourself.
+- "same time/date/slot" → leave both null.
+- Times are HH:MM 24h.
+
+# OTHER
+- patient_name: current message only, never an email.
+- phone_number / invitee_email: current message, else keep Previous State.
+- appointment_id: only an explicit integer stated THIS turn, never inferred.
+- duration_minutes: from message if given, else Previous State, else 30.
+- Pronouns resolve to the most recently discussed doctor.
+"""
+
+DYNAMIC_CONTEXT_TEMPLATE = """
+# Previous State
+intent={prev_intent} | doctor_name={prev_doctor_name} | suggested_alternative={prev_suggested_alternative}
+appointment_id={prev_appointment_id}
+date={prev_appointment_date} | time={prev_appointment_time} | duration={prev_duration_minutes}
+patient={prev_patient_name} | phone={prev_phone_number} | reason={prev_reason_for_visit}
+specialization={prev_specialization_needed} | email={prev_invitee_email}
+
+Today: {today} ({today_weekday})
+
+Recent conversation:
+{history}
+"""
+
+
+_WEEKDAYS = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+
+_WEEKDAY_WORD_PATTERN = re.compile(
+    r'\b(next\s+|this\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b',
+    re.IGNORECASE,
+)
+_EXPLICIT_DATE_PATTERN = re.compile(r'\d{1,4}[-/]\d{1,2}([-/]\d{1,4})?')
+_MONTH_NAME_DATE_PATTERN = re.compile(
+    r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}\b',
+    re.IGNORECASE,
+)
+
+_AFFIRMATIVE_PATTERN = re.compile(
+    r'^\s*(ok(ay)?|yes|yeah|yep|sure|go ahead|sounds good|confirm(ed)?)\s*[!.]*\s*$',
+    re.IGNORECASE,
+)
+
+_REJECTION_PATTERN = re.compile(
+    r"^\s*(no|nope|nah|cancel( that)?|stop|don'?t( do that)?)\s*[!.]*\s*$",
+    re.IGNORECASE,
+)
+
+_ANY_DOCTOR_PATTERN = re.compile(
+    r"^\s*(whoever'?s? (is )?free|any(one|body)?( doctor)?|no preference|"
+    r"doesn'?t matter|don'?t (know|mind|care)|dont know|dunno|first available)\s*[!.]*\s*$",
+    re.IGNORECASE,
+)
+_DOCTOR_CHANGE_SIGNAL_PATTERN = re.compile(
+    r"\b(another|different|someone else|switch|change (my |the )?doctor|new doctor)\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_weekday_phrase(message: str) -> str | None:
+    match = _WEEKDAY_WORD_PATTERN.search(message)
+    if not match:
+        return None
+    prefix = (match.group(1) or "").strip().lower()
+    day = match.group(2).lower()
+    return f"{prefix} {day}".strip() if prefix else day
+
+
+def _resolve_relative_date(phrase: str, today: date) -> str | None:
+    if not phrase:
+        return None
+    p = phrase.strip().lower()
+    if p == "today":
+        return today.isoformat()
+    if p == "tomorrow":
+        return (today + timedelta(days=1)).isoformat()
+
+    is_next = p.startswith("next ")
+    day_word = p[5:].strip() if is_next else (p[5:].strip() if p.startswith("this ") else p)
+    if day_word not in _WEEKDAYS:
+        return None
+
+    today_idx = today.weekday()
+    target_idx = _WEEKDAYS[day_word]
+    days_ahead = (target_idx - today_idx) % 7
+    if days_ahead == 0:
+        days_ahead = 7
+    if is_next:
+        days_ahead += 7
+    return (today + timedelta(days=days_ahead)).isoformat()
+
+
+def _carry_forward(parsed: dict, field: str, prev_value):
+    value = parsed.get(field)
+    return value if value is not None else prev_value
+
+
+_CLEAR_ALLOWED_INTENTS = {"book", "reschedule", "cancel"}
+
+
+async def supervisor_node(state: GraphState) -> dict:
+    logger.info("Supervisor processing message: %s", state.user_message)
+    today_date = date.today()
+
+    # -----------------------------------------------------------------
+    # FAST PATH — zero LLM calls, zero tokens.
+    # A bare "ok"/"yes" confirming a doctor we already suggested, or a
+    # bare "no"/"cancel that", is fully deterministic. The resolution
+    # logic already exists further down (it used to run AFTER the LLM
+    # call) — running it here means we never make the API request at
+    # all for these turns, instead of just getting it cheaper via
+    # caching. This is the biggest lever: a skipped call costs $0,
+    # a cached call still costs ~half price.
+    # -----------------------------------------------------------------
+    if _AFFIRMATIVE_PATTERN.match(state.user_message) and state.suggested_alternative:
+        logger.info(
+            "Fast-path: affirmative confirmation of suggested_alternative=%r — skipping LLM call.",
+            state.suggested_alternative,
+        )
+        _call_stats["fast_path"] += 1
+        return {
+            "intent": state.intent,
+            "doctor_name": state.suggested_alternative,
+            "appointment_date": state.appointment_date,
+            "appointment_time": state.appointment_time,
+            "duration_minutes": state.duration_minutes or 30,
+            "patient_name": state.patient_name,
+            "phone_number": state.phone_number,
+            "reason_for_visit": state.reason_for_visit,
+            "specialization_needed": state.specialization_needed,
+            "invitee_email": state.invitee_email,
+            "appointment_id": state.appointment_id,
+            "suggested_alternative": None,
+            "rebook_requested": False,
+        }
+
+    if _REJECTION_PATTERN.match(state.user_message):
+        logger.info("Fast-path: bare rejection (%r) — skipping LLM call.", state.user_message)
+        _call_stats["fast_path"] += 1
+        preserved_appointment_id = state.appointment_id if state.intent == "reschedule" else None
+        return {
+            "intent": None,
+            "doctor_name": None,
+            "appointment_date": None,
+            "appointment_time": None,
+            "suggested_alternative": None,
+            "appointment_id": preserved_appointment_id,
+            "duration_minutes": state.duration_minutes or 30,
+            "patient_name": state.patient_name,
+            "phone_number": state.phone_number,
+            "reason_for_visit": state.reason_for_visit,
+            "specialization_needed": state.specialization_needed,
+            "invitee_email": state.invitee_email,
+            "rebook_requested": False,
+            "response_message": "No problem — that's been cancelled. Let me know if there's anything else I can help with.",
+        }
+
+    # -----------------------------------------------------------------
+    # Normal path — message actually needs interpretation, call the LLM.
+    # -----------------------------------------------------------------
+    today = today_date.isoformat()
+    today_weekday = today_date.strftime("%A")
+
+    recent = state.history[-4:] if len(state.history) > 4 else state.history
+    history_text = ""
+    for msg in recent:
+        role = "User" if msg["role"] == "user" else "Assistant"
+        history_text += f"{role}: {msg['content']}\n"
+
+    dynamic_context = DYNAMIC_CONTEXT_TEMPLATE.format(
+        today=today,
+        today_weekday=today_weekday,
+        history=history_text or "No history yet.",
+        prev_intent=state.intent,
+        prev_doctor_name=state.doctor_name,
+        prev_suggested_alternative=state.suggested_alternative,
+        prev_appointment_id=state.appointment_id,
+        prev_appointment_date=state.appointment_date,
+        prev_appointment_time=state.appointment_time,
+        prev_duration_minutes=state.duration_minutes,
+        prev_patient_name=state.patient_name,
+        prev_phone_number=state.phone_number,
+        prev_reason_for_visit=state.reason_for_visit,
+        prev_specialization_needed=state.specialization_needed,
+        prev_invitee_email=state.invitee_email,
+    )
+
+    response = await structured_llm.ainvoke([
+        SystemMessage(content=STATIC_INSTRUCTIONS),   # identical every call → cache-eligible
+        SystemMessage(content=dynamic_context),        # changes every call, but small
+        HumanMessage(content=state.user_message),
+    ])
+
+    # include_raw=True returns {"raw": AIMessage, "parsed": SupervisorOutput,
+    # "parsing_error": ...}. usage_metadata (and cache info) only lives on
+    # "raw" — the previous version passed the parsed object straight to
+    # _log_llm_usage, which silently always logged 0/0.
+    raw_message = response["raw"]
+    parsed_output: SupervisorOutput = response["parsed"]
+
+    _log_llm_usage(raw_message)
+
+    parsed = parsed_output.model_dump()
+    logger.info("Supervisor extracted: %s", parsed)
+
+    if _REJECTION_PATTERN.match(state.user_message):
+        logger.info("Detected explicit rejection (%r) — wiping proposal state.", state.user_message)
+        preserved_appointment_id = state.appointment_id if state.intent == "reschedule" else None
+        fallback_response = parsed.get("fallback_response")
+        return {
+            "intent": None,
+            "doctor_name": None,
+            "appointment_date": None,
+            "appointment_time": None,
+            "suggested_alternative": None,
+            "appointment_id": preserved_appointment_id,
+            "duration_minutes": state.duration_minutes or 30,
+            "patient_name": state.patient_name,
+            "phone_number": state.phone_number,
+            "reason_for_visit": state.reason_for_visit,
+            "specialization_needed": state.specialization_needed,
+            "invitee_email": state.invitee_email,
+            "rebook_requested": False,
+            "response_message": fallback_response or "No problem — that's been cancelled. Let me know if there's anything else I can help with.",
+        }
+
+    resolved_intent = parsed.get("intent") if parsed.get("intent") is not None else state.intent
+
+    resolved_appointment_id = parsed.get("appointment_id") if parsed.get("appointment_id") is not None else state.appointment_id
+
+    if resolved_intent == "book" and state.intent != "book":
+        logger.info("Fresh book intent detected — clearing stale appointment_id %s from prior flow.", resolved_appointment_id)
+        resolved_appointment_id = None
+
+    if resolved_intent == "reschedule" and not resolved_appointment_id:
+        logger.info("Reschedule requested with no appointment_id yet — routing to scheduling to ask for it.")
+
+    raw_doctor_name = parsed.get("doctor_name")
+    if raw_doctor_name is None and parsed.get("clear_doctor"):
+        raw_doctor_name = "CLEAR"
+
+    if (
+        raw_doctor_name is None
+        and resolved_intent in _CLEAR_ALLOWED_INTENTS
+        and _ANY_DOCTOR_PATTERN.match(state.user_message)
+    ):
+        logger.info("Detected 'any doctor' phrasing — routing through CLEAR sentinel.")
+        raw_doctor_name = "CLEAR"
+
+    if raw_doctor_name == "CLEAR":
+        if resolved_intent in _CLEAR_ALLOWED_INTENTS:
+            spurious_clear = (
+                resolved_intent == "reschedule"
+                and state.doctor_name
+                and not _DOCTOR_CHANGE_SIGNAL_PATTERN.search(state.user_message)
+                and not _ANY_DOCTOR_PATTERN.match(state.user_message)
+            )
+            if spurious_clear:
+                logger.warning(
+                    "Ignoring spurious CLEAR sentinel — no doctor-change language in "
+                    "%r during reschedule; keeping doctor_name=%r.",
+                    state.user_message, state.doctor_name,
+                )
+                resolved_doctor_name = state.doctor_name
+                resolved_suggested_alternative = state.suggested_alternative
+            else:
+                resolved_doctor_name = None
+                resolved_suggested_alternative = None
+                if resolved_intent != "reschedule":
+                    resolved_appointment_id = None
+        else:
+            logger.warning(
+                "Ignoring CLEAR doctor_name sentinel because intent=%s (not a booking context)",
+                resolved_intent,
+            )
+            resolved_doctor_name = state.doctor_name
+            resolved_suggested_alternative = state.suggested_alternative
+    elif raw_doctor_name is not None:
+        resolved_doctor_name = raw_doctor_name
+        resolved_suggested_alternative = state.suggested_alternative
+    else:
+        resolved_doctor_name = state.doctor_name
+        resolved_suggested_alternative = state.suggested_alternative
+
+    if (
+        _AFFIRMATIVE_PATTERN.match(state.user_message)
+        and state.suggested_alternative
+        and raw_doctor_name is None
+    ):
+        resolved_doctor_name = state.suggested_alternative
+        resolved_suggested_alternative = None
+
+    rebook_requested = bool(parsed.get("rebook_requested", False))
+
+    relative_phrase = parsed.get("relative_date_phrase")
+    resolved_relative_date = _resolve_relative_date(relative_phrase, today_date) if relative_phrase else None
+    if resolved_relative_date:
+        resolved_appointment_date = resolved_relative_date
+    else:
+        resolved_appointment_date = _carry_forward(parsed, "appointment_date", state.appointment_date)
+
+    weekday_phrase = _extract_weekday_phrase(state.user_message)
+    has_explicit_date_signal = bool(
+        _EXPLICIT_DATE_PATTERN.search(state.user_message)
+    ) or bool(_MONTH_NAME_DATE_PATTERN.search(state.user_message))
+    if weekday_phrase and not has_explicit_date_signal and not resolved_relative_date:
+        corrected_date = _resolve_relative_date(weekday_phrase, today_date)
+        if corrected_date and corrected_date != resolved_appointment_date:
+            logger.warning(
+                "Overriding model-computed appointment_date %r with deterministic "
+                "resolution %r for weekday phrase %r found in message %r.",
+                resolved_appointment_date, corrected_date, weekday_phrase, state.user_message,
+            )
+            resolved_appointment_date = corrected_date
+
+    # A NEW date given this turn (explicit or relative) must not be silently
+    # paired with a stale carried-over time from a previous slot — that
+    # produces impossible combinations (e.g. a fresh "Saturday" inheriting
+    # the old booking's 09:00, when the alternative doctor for Saturday only
+    # opens at 10:00), which surfaces as a false "no one is free" instead of
+    # asking for a time. Only carry the old time forward when the date is
+    # ALSO unchanged this turn (i.e. the user said "same date/time" or
+    # nothing about either) — that's the one case where reusing Previous
+    # State's time is actually intended.
+    new_date_given_this_turn = bool(resolved_relative_date) or parsed.get("appointment_date") is not None
+    if new_date_given_this_turn:
+        resolved_appointment_time = parsed.get("appointment_time")
+    else:
+        resolved_appointment_time = _carry_forward(parsed, "appointment_time", state.appointment_time)
+
+    result = {
+        "intent": resolved_intent,
+        "doctor_name": resolved_doctor_name,
+        "appointment_date": resolved_appointment_date,
+        "appointment_time": resolved_appointment_time,
+        "duration_minutes": parsed.get("duration_minutes") or state.duration_minutes or 30,
+        "patient_name": _carry_forward(parsed, "patient_name", state.patient_name),
+        "phone_number": _carry_forward(parsed, "phone_number", state.phone_number),
+        "reason_for_visit": _carry_forward(parsed, "reason_for_visit", state.reason_for_visit),
+        "specialization_needed": _carry_forward(parsed, "specialization_needed", state.specialization_needed),
+        "invitee_email": parsed.get("invitee_email") or state.invitee_email,
+        "appointment_id": resolved_appointment_id,
+        "suggested_alternative": resolved_suggested_alternative,
+        "rebook_requested": rebook_requested,
+    }
+
+    if resolved_intent is None:
+        fallback_response = parsed.get("fallback_response")
+        if fallback_response:
+            result["response_message"] = fallback_response
+
+    return result
+</file>
+
+<file path="api.py">
+import logging
+import re
+from difflib import SequenceMatcher
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException
+from fastapi.concurrency import run_in_threadpool
+from pydantic import BaseModel
+from db.schema import init_db
+from graph import build_graph
+from state import GraphState
+from store import get_conversation, save_conversation
+from main import opik_tracer
+from fastapi.middleware.cors import CORSMiddleware
+from rag import upsert_chroma, upsert_pinecone, upsert_milvus
+
+
+logger = logging.getLogger(__name__)
+graph = None
+
+SMALLTALK = {
+    "hello", "hi", "hey", "hii", "hiii", "hello!", "hi!", "hey!",
+    "good morning", "good afternoon", "good evening",
+    "thanks", "thank you", "ok", "okay", "bye", "goodbye", "ciao"
+}
+
+SMALLTALK_REPLIES = {
+    "hello": "Hello! Welcome to BrightSmile Dental Clinic. I can help you book, cancel, or reschedule appointments, check doctor availability, or answer questions about our services. How can I help?",
+    "hi": "Hi there! How can I help you today?",
+    "hey": "Hey! What can I do for you?",
+    "hii": "Hi! How can I help?",
+    "hiii": "Hi! How can I help?",
+    "good morning": "Good morning! How can I help you today?",
+    "good afternoon": "Good afternoon! How can I help you today?",
+    "good evening": "Good evening! How can I help you today?",
+    "thanks": "You're welcome! Let me know if there's anything else I can help with.",
+    "thank you": "You're welcome! Is there anything else you need?",
+    "ok": "Got it! Let me know if there's anything else.",
+    "okay": "Got it! Let me know if there's anything else.",
+    "bye": "Goodbye! Take care of your smile!",
+    "goodbye": "Goodbye! Feel free to reach out anytime.",
+    "ciao": "Ciao! Feel free to reach out anytime.",
+}
+
+_SMALLTALK_KEYS = list(SMALLTALK_REPLIES.keys())
+
+
+def _closest_smalltalk(msg_lower: str) -> str | None:
+    if not msg_lower or len(msg_lower.split()) > 3:
+        return None
+    cleaned = re.sub(r"[^a-z\s]", "", msg_lower)
+    collapsed = re.sub(r"(.)\1+", r"\1", cleaned)
+    best_key, best_ratio = None, 0.0
+    for key in _SMALLTALK_KEYS:
+        ratio = max(
+            SequenceMatcher(None, cleaned, key).ratio(),
+            SequenceMatcher(None, collapsed, key).ratio()
+        )
+        if ratio > best_ratio:
+            best_ratio, best_key = ratio, key
+    return best_key if best_ratio >= 0.72 else None
+
+
+_HISTORY_ASSISTANT_MAX_CHARS = 220
+
+
+def _compact_for_history(text: str) -> str:
+    text = text.strip()
+    if len(text) <= _HISTORY_ASSISTANT_MAX_CHARS:
+        return text
+    sentences = re.split(r"(?<=[.?!])\s+", text)
+    last_sentence = sentences[-1].strip() if sentences else ""
+    if last_sentence and len(last_sentence) < _HISTORY_ASSISTANT_MAX_CHARS - 40:
+        head_budget = _HISTORY_ASSISTANT_MAX_CHARS - len(last_sentence) - 5
+        head = text[:head_budget].rsplit(" ", 1)[0]
+        return f"{head} […] {last_sentence}"
+    truncated = text[:_HISTORY_ASSISTANT_MAX_CHARS].rsplit(" ", 1)[0]
+    return f"{truncated} […]"
+
+
+# Fields that should never be overwritten with None when merging result into prior.
+# These are set once and must persist until explicitly cleared by agent logic.
+_STICKY_FIELDS = {
+    "sender_id", "patient_name", "phone_number", "invitee_email",
+    "reason_for_visit", "specialization_needed", "doctor_name",
+    "appointment_date", "appointment_time", "duration_minutes",
+    "appointment_id", "suggested_alternative", "rebook_requested",
+    "intent", "vector_store",
+}
+
+
+def _merge_state(prior: dict, result: dict) -> dict:
+    """
+    Merge graph result over prior Redis state.
+    For sticky fields: only overwrite if the new value is not None.
+    For non-sticky fields: always take the new value.
+    This ensures fields not returned by a node (e.g. appointment_id
+    when scheduling_node returns an early 'please provide X' message)
+    are preserved in Redis for the next turn.
+    """
+    merged = dict(prior)
+    for key, value in result.items():
+        if key in _STICKY_FIELDS:
+            if value is not None:
+                merged[key] = value
+        else:
+            merged[key] = value
+    return merged
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global graph
+    await init_db()
+    graph = build_graph()
+    logger.info("Dental clinic booking system ready.")
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class ChatRequest(BaseModel):
+    message: str
+    sender_id: str
+    vector_store: str = "chroma"
+
+    class Config:
+        extra = "forbid"
+
+
+class ChatResponse(BaseModel):
+    response: str
+
+
+@app.get("/")
+async def root():
+    return {"status": "ok", "message": "Dental clinic booking system API is running."}
+
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest):
+    convo = await get_conversation(request.sender_id)
+    history = convo["history"]
+    prior = convo["state"]
+
+    # Fast path — zero LLM calls for smalltalk with no active flow
+    msg_lower = request.message.strip().lower().rstrip("!.,")
+    matched_key = msg_lower if msg_lower in SMALLTALK else _closest_smalltalk(msg_lower)
+    if matched_key and not prior.get("intent"):
+        reply = SMALLTALK_REPLIES.get(matched_key, "Hello! How can I help you today?")
+        history.append({"role": "user", "content": request.message})
+        history.append({"role": "assistant", "content": _compact_for_history(reply)})
+        await save_conversation(request.sender_id, history, prior)
+        return ChatResponse(response=reply)
+
+    initial_state = GraphState(
+        user_message=request.message,
+        history=history,
+        vector_store=request.vector_store,
+        sender_id=request.sender_id,
+        intent=prior.get("intent"),
+        invitee_email=prior.get("invitee_email"),
+        doctor_name=prior.get("doctor_name"),
+        appointment_date=prior.get("appointment_date"),
+        appointment_time=prior.get("appointment_time"),
+        duration_minutes=prior.get("duration_minutes", 30),
+        patient_name=prior.get("patient_name"),
+        phone_number=prior.get("phone_number"),
+        reason_for_visit=prior.get("reason_for_visit"),
+        specialization_needed=prior.get("specialization_needed"),
+        suggested_alternative=prior.get("suggested_alternative"),
+        appointment_id=prior.get("appointment_id"),
+        rebook_requested=prior.get("rebook_requested", False),
+    )
+
+    result = await graph.ainvoke(
+        initial_state,
+        config={"callbacks": [opik_tracer]},
+    )
+
+    response = (result.get("response_message") or "").strip()
+    reply = response or "Sorry, I did not understand that."
+
+    history.append({"role": "user", "content": request.message})
+    history.append({"role": "assistant", "content": _compact_for_history(reply)})
+
+    # Merge result over prior — sticky fields only overwritten when non-None
+    saved_state = _merge_state(prior, result)
+    # Always stamp the sender_id so it's always in Redis
+    saved_state["sender_id"] = request.sender_id
+
+    await save_conversation(request.sender_id, history, saved_state)
+
+    return ChatResponse(response=reply)
+
+
+@app.delete("/reset/{sender_id}")
+async def reset_conversation(sender_id: str):
+    await save_conversation(sender_id, [], {})
+    return {"status": "ok", "message": f"Conversation reset for {sender_id}"}
+
+
+# Backend name -> the module-level function that clears that backend's
+# existing index and re-ingests data/*.md fresh (see rag/*_store.py).
+_VECTOR_STORE_UPSERT = {
+    "chroma": upsert_chroma,
+    "pinecone": upsert_pinecone,
+    "milvus": upsert_milvus,
+}
+
+
+class VectorStoreUpdateRequest(BaseModel):
+    sender_id: str
+    vector_store: str  # "chroma" | "pinecone" | "milvus"
+
+    class Config:
+        extra = "forbid"
+
+
+class VectorStoreUpdateResponse(BaseModel):
+    status: str
+    vector_store: str
+    message: str
+
+
+@app.post("/vectorstore/update", response_model=VectorStoreUpdateResponse)
+async def update_vector_store(request: VectorStoreUpdateRequest):
+    """
+    Clear all existing chunks currently in the given backend's index and
+    re-ingest fresh from data/*.md (clear-then-rebuild, not an incremental
+    upsert), then remember this sender's backend choice so their next
+    /chat call uses it. Does not touch conversation history — history
+    lives in Redis, entirely independent of the vector store backend.
+    """
+    upsert_fn = _VECTOR_STORE_UPSERT.get(request.vector_store)
+    if upsert_fn is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown vector_store '{request.vector_store}'. Choose one of: {', '.join(_VECTOR_STORE_UPSERT)}.",
+        )
+
+    # Embedding + index calls are blocking network/CPU work — run off the
+    # event loop so this doesn't stall other in-flight /chat requests.
+    logger.info("Clearing and rebuilding %s index for sender %s...", request.vector_store, request.sender_id)
+    await run_in_threadpool(upsert_fn)
+
+    convo = await get_conversation(request.sender_id)
+    new_state = dict(convo["state"])
+    new_state["vector_store"] = request.vector_store
+    new_state["sender_id"] = request.sender_id
+    await save_conversation(request.sender_id, convo["history"], new_state)
+
+    logger.info("Vector store for %s set to %s.", request.sender_id, request.vector_store)
+    return VectorStoreUpdateResponse(
+        status="ok",
+        vector_store=request.vector_store,
+        message=f"Cleared and rebuilt the {request.vector_store} index with the latest documents.",
+    )
+</file>
+
+<file path="config.py">
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+DB_PATH = os.getenv("DB_PATH")
+MODEL_NAME = os.getenv("MODEL_NAME")
+SMTP_HOST = os.getenv("SMTP_HOST")
+SMTP_PORT = int(os.getenv("SMTP_PORT"))
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+SMTP_SENDER = os.getenv("SMTP_SENDER")
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
+CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "chroma_db")
+UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
+UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
+OPIK_API_KEY = os.getenv("OPIK_API_KEY")
+OPIK_PROJECT_NAME = os.getenv("OPIK_PROJECT_NAME", "dental-booking-system")
+FAQ_CACHE_TTL_SECONDS = int(os.getenv("FAQ_CACHE_TTL_SECONDS", "86400"))  # 24h default
+FAQ_EMBEDDING_MODEL = os.getenv("FAQ_EMBEDDING_MODEL", "text-embedding-3-small")
+FAQ_SIMILARITY_THRESHOLD = float(os.getenv("FAQ_SIMILARITY_THRESHOLD", "0.90"))
+FAQ_INDEX_MAX_ENTRIES = int(os.getenv("FAQ_INDEX_MAX_ENTRIES", "300"))
+MILVUS_URI = os.getenv("MILVUS_URI", "./milvus_local.db")
+MILVUS_COLLECTION_NAME = os.getenv("MILVUS_COLLECTION_NAME", "dental_clinic_docs")
+</file>
+
+<file path="db/__init__.py">
+from .queries import (
+    check_doctor_availability,
+    check_doctor_availability_excluding,
+    create_appointment,
+    cancel_appointment,
+    cancel_appointment_with_ownership,
+    reschedule_appointment,
+    find_alternative_doctor,
+    get_all_doctors,
+    get_doctor_schedule,
+    get_doctors_by_specialization,
+    get_doctor_specialization,
+    get_doctor_day_info,
+    get_appointment_by_id,
+)
+from .schema import init_db
+
+__all__ = [
+    "check_doctor_availability",
+    "check_doctor_availability_excluding",
+    "create_appointment",
+    "cancel_appointment",
+    "cancel_appointment_with_ownership",
+    "reschedule_appointment",
+    "find_alternative_doctor",
+    "get_all_doctors",
+    "get_doctor_schedule",
+    "get_doctors_by_specialization",
+    "get_doctor_specialization",
+    "get_doctor_day_info",
+    "get_appointment_by_id",
+    "init_db",
+]
+</file>
+
+<file path="db/queries.py">
+import aiosqlite
+import logging
+from datetime import datetime
+from config import DB_PATH
+
+logger = logging.getLogger(__name__)
+
+
+def _is_valid_time_format(value: str) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        datetime.strptime(value, "%H:%M")
+        return True
+    except ValueError:
+        return False
+
+
+def _is_valid_date_format(value: str) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+        return True
+    except ValueError:
+        return False
+
+
+async def _resolve_doctor_name(db, doctor_name: str) -> str | None:
+    async with db.execute("SELECT name FROM doctors WHERE name = ?", (doctor_name,)) as cursor:
+        exact = await cursor.fetchone()
+    if exact:
+        return exact[0]
+    last_word = doctor_name.strip().split()[-1]
+    async with db.execute("SELECT name FROM doctors WHERE name LIKE ?", (f"%{last_word}",)) as cursor:
+        matches = await cursor.fetchall()
+    if len(matches) == 1:
+        return matches[0][0]
+    async with db.execute("SELECT name FROM doctors WHERE name LIKE ?", (f"%{doctor_name}%",)) as cursor:
+        matches = await cursor.fetchall()
+    if len(matches) == 1:
+        return matches[0][0]
+    return None
+
+
+async def check_doctor_availability(
+    doctor_name: str,
+    appointment_date: str,
+    appointment_time: str,
+    duration_minutes: int = 30,
+) -> bool:
+    return await check_doctor_availability_excluding(
+        doctor_name, appointment_date, appointment_time, duration_minutes,
+        exclude_appointment_id=None,
+    )
+
+
+async def check_doctor_availability_excluding(
+    doctor_name: str,
+    appointment_date: str,
+    appointment_time: str,
+    duration_minutes: int = 30,
+    exclude_appointment_id: int = None,
+) -> bool:
+    if not _is_valid_date_format(appointment_date):
+        logger.warning("Invalid appointment_date received: %r", appointment_date)
+        return False
+    if not _is_valid_time_format(appointment_time):
+        logger.warning("Invalid appointment_time received: %r", appointment_time)
+        return False
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        resolved_name = await _resolve_doctor_name(db, doctor_name)
+        if not resolved_name:
+            logger.warning("Doctor not found or ambiguous: %r", doctor_name)
+            return False
+
+        async with db.execute(
+            "SELECT available_days, start_time, end_time FROM doctors WHERE name = ?",
+            (resolved_name,)
+        ) as cursor:
+            doctor = await cursor.fetchone()
+        available_days, start_time, end_time = doctor
+
+        day_of_week = datetime.strptime(appointment_date, "%Y-%m-%d").strftime("%A")
+        if day_of_week not in available_days.split(","):
+            return False
+
+        appt_mins = int(appointment_time[:2]) * 60 + int(appointment_time[3:])
+        start_mins = int(start_time[:2]) * 60 + int(start_time[3:])
+        end_mins = int(end_time[:2]) * 60 + int(end_time[3:])
+        if appt_mins < start_mins or (appt_mins + duration_minutes) > end_mins:
+            return False
+
+        async with db.execute("""
+            SELECT a.id FROM appointments a
+            JOIN doctors d ON a.doctor_id = d.id
+            WHERE d.name = ?
+            AND a.appointment_date = ?
+            AND a.status = 'active'
+            AND a.id != COALESCE(?, -1)
+            AND (
+                (substr(a.appointment_time, 1, 2) * 60 + substr(a.appointment_time, 4, 2))
+                    < (substr(?, 1, 2) * 60 + substr(?, 4, 2)) + ?
+                AND
+                (substr(a.appointment_time, 1, 2) * 60 + substr(a.appointment_time, 4, 2))
+                    + a.duration_minutes
+                    > (substr(?, 1, 2) * 60 + substr(?, 4, 2))
+            )
+        """, (
+            resolved_name, appointment_date,
+            exclude_appointment_id,
+            appointment_time, appointment_time, duration_minutes,
+            appointment_time, appointment_time,
+        )) as cursor:
+            return await cursor.fetchone() is None
+
+
+async def create_appointment(
+    doctor_name: str,
+    patient_name: str,
+    patient_email: str,
+    appointment_date: str,
+    appointment_time: str,
+    duration_minutes: int = 30,
+    phone_number: str = None,
+    reason_for_visit: str = None,
+    sender_id: str = None,
+) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        resolved_name = await _resolve_doctor_name(db, doctor_name)
+        if not resolved_name:
+            raise ValueError(f"Doctor not found or ambiguous: {doctor_name}")
+        async with db.execute("SELECT id FROM doctors WHERE name = ?", (resolved_name,)) as cursor:
+            doctor = await cursor.fetchone()
+        result = await db.execute("""
+            INSERT INTO appointments
+                (doctor_id, patient_name, patient_email, phone_number,
+                 reason_for_visit, sender_id, appointment_date, appointment_time, duration_minutes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            doctor[0], patient_name, patient_email, phone_number,
+            reason_for_visit, sender_id, appointment_date, appointment_time, duration_minutes,
+        ))
+        await db.commit()
+        logger.info("Appointment created with id %s for sender %s", result.lastrowid, sender_id)
+        return result.lastrowid
+
+
+async def cancel_appointment(appointment_id: int) -> bool:
+    """Cancel by ID only — no ownership check. Internal use only."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "UPDATE appointments SET status = 'cancelled' WHERE id = ? AND status = 'active'",
+            (appointment_id,)
+        )
+        await db.commit()
+        if cursor.rowcount == 0:
+            logger.warning("Cancel failed for appointment %s.", appointment_id)
+            return False
+        logger.info("Appointment %s cancelled.", appointment_id)
+        return True
+
+
+async def cancel_appointment_with_ownership(
+    appointment_id: int,
+    sender_id: str,
+) -> dict:
+    """
+    Cancel only if the appointment belongs to this sender_id.
+    Returns dict: success bool + reason string.
+    Falls back to email match if sender_id was not stored (legacy rows).
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT status, sender_id, patient_email FROM appointments WHERE id = ?",
+            (appointment_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+
+        if not row:
+            logger.warning("Cancel failed for appointment %s: not found.", appointment_id)
+            return {"success": False, "reason": "not_found"}
+
+        status, owner_sender_id, owner_email = row
+
+        # Primary check: sender_id match
+        if owner_sender_id and owner_sender_id != sender_id:
+            logger.warning(
+                "Cancel rejected for appointment %s: sender %r is not owner %r.",
+                appointment_id, sender_id, owner_sender_id,
+            )
+            return {"success": False, "reason": "not_owner"}
+
+        if status != "active":
+            return {"success": False, "reason": "already_cancelled"}
+
+        await db.execute(
+            "UPDATE appointments SET status = 'cancelled' WHERE id = ?",
+            (appointment_id,)
+        )
+        await db.commit()
+        logger.info("Appointment %s cancelled by sender %r.", appointment_id, sender_id)
+        return {"success": True, "reason": "cancelled"}
+
+
+async def reschedule_appointment(
+    appointment_id: int,
+    sender_id: str,
+    new_doctor_name: str,
+    new_date: str,
+    new_time: str,
+    new_duration_minutes: int = 30,
+) -> dict:
+    """
+    Reschedule in-place (UPDATE). Verifies sender_id ownership.
+    Returns dict with success bool, reason, and updated appointment on success.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT status, sender_id FROM appointments WHERE id = ?",
+            (appointment_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+
+        if not row:
+            return {"success": False, "reason": "not_found"}
+
+        status, owner_sender_id = row
+
+        if owner_sender_id and owner_sender_id != sender_id:
+            logger.warning(
+                "Reschedule rejected for appointment %s: sender %r is not owner %r.",
+                appointment_id, sender_id, owner_sender_id,
+            )
+            return {"success": False, "reason": "not_owner"}
+
+        if status != "active":
+            return {"success": False, "reason": "already_cancelled"}
+
+        resolved_name = await _resolve_doctor_name(db, new_doctor_name)
+        if not resolved_name:
+            return {"success": False, "reason": "doctor_not_found"}
+
+        async with db.execute("SELECT id FROM doctors WHERE name = ?", (resolved_name,)) as cursor:
+            doctor_row = await cursor.fetchone()
+        new_doctor_id = doctor_row[0]
+
+    # Availability check excluding this appointment
+    available = await check_doctor_availability_excluding(
+        resolved_name, new_date, new_time, new_duration_minutes,
+        exclude_appointment_id=appointment_id,
+    )
+    if not available:
+        return {"success": False, "reason": "unavailable"}
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            UPDATE appointments
+            SET doctor_id = ?, appointment_date = ?, appointment_time = ?, duration_minutes = ?
+            WHERE id = ?
+        """, (new_doctor_id, new_date, new_time, new_duration_minutes, appointment_id))
+        await db.commit()
+        logger.info(
+            "Appointment %s rescheduled to %s %s with %s by sender %s.",
+            appointment_id, new_date, new_time, resolved_name, sender_id,
+        )
+
+        async with db.execute("""
+            SELECT a.id, a.appointment_date, a.appointment_time, a.duration_minutes,
+                   a.status, a.patient_name, a.patient_email, d.name AS doctor_name
+            FROM appointments a
+            JOIN doctors d ON a.doctor_id = d.id
+            WHERE a.id = ?
+        """, (appointment_id,)) as cursor:
+            updated = await cursor.fetchone()
+
+    return {
+        "success": True,
+        "reason": "rescheduled",
+        "appointment": {
+            "id": updated[0],
+            "appointment_date": updated[1],
+            "appointment_time": updated[2],
+            "duration_minutes": updated[3],
+            "status": updated[4],
+            "patient_name": updated[5],
+            "patient_email": updated[6],
+            "doctor_name": updated[7],
+        },
+    }
+
+
+async def find_alternative_doctor(
+    exclude_doctor: str,
+    appointment_date: str,
+    appointment_time: str,
+    duration_minutes: int = 30,
+    candidate_names: list[str] = None,
+) -> str | None:
+    """
+    Find a free doctor at the given slot, excluding `exclude_doctor`.
+    If `candidate_names` is provided, ONLY those doctors are considered — this
+    should be the same specialization-matched candidate list already used to
+    make the original recommendation (see booking_agent._get_doctors_for_reason),
+    so the alternative offered is guaranteed to be clinically appropriate rather
+    than "any doctor who happens to be free" (which previously surfaced e.g. a
+    Paediatric Dentist as an "alternative" for an adult general visit).
+    If `candidate_names` is None, falls back to searching all doctors (used for
+    reschedule flows where the original reason/specialization isn't known).
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        resolved_exclude = await _resolve_doctor_name(db, exclude_doctor)
+        exclude_value = resolved_exclude or exclude_doctor
+
+        if candidate_names is not None:
+            doctors = [name for name in candidate_names if name != exclude_value]
+            if not doctors:
+                logger.info(
+                    "No same-specialization candidates left (excluding %r); "
+                    "returning no alternative instead of an unrelated specialist.",
+                    exclude_value,
+                )
+                return None
+        else:
+            async with db.execute(
+                "SELECT name FROM doctors WHERE name != ?",
+                (exclude_value,)
+            ) as cursor:
+                doctors = [row[0] for row in await cursor.fetchall()]
+
+    for doctor in doctors:
+        if await check_doctor_availability(doctor, appointment_date, appointment_time, duration_minutes):
+            return doctor
+    return None
+
+
+async def get_all_doctors() -> list[str]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT name FROM doctors") as cursor:
+            return [row[0] for row in await cursor.fetchall()]
+
+
+async def get_doctor_schedule(doctor_name: str) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        resolved_name = await _resolve_doctor_name(db, doctor_name)
+        if not resolved_name:
+            return None
+        async with db.execute(
+            "SELECT name, available_days, start_time, end_time FROM doctors WHERE name = ?",
+            (resolved_name,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "name": row[0],
+            "available_days": row[1],
+            "start_time": row[2],
+            "end_time": row[3],
+        }
+
+
+async def get_doctor_specialization(doctor_name: str) -> str | None:
+    """
+    Look up a doctor's specialization directly, so callers that only have a
+    doctor name (e.g. an in-progress reschedule where the patient never
+    restated their reason for visit) can still build a same-specialty
+    candidate list instead of silently falling back to "search every doctor",
+    which is what caused alternative-doctor suggestions to skip the
+    explanatory messaging (see get_doctor_day_info / _explain_unavailable_
+    with_specialist in scheduling_agent.py — both require a non-empty
+    candidate_names list to run).
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        resolved_name = await _resolve_doctor_name(db, doctor_name)
+        if not resolved_name:
+            return None
+        async with db.execute(
+            "SELECT specialization FROM doctors WHERE name = ?", (resolved_name,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return row[0] if row else None
+
+
+async def get_doctors_by_specialization(specializations: list[str]) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        results = []
+        seen = set()
+        for keyword in specializations:
+            async with db.execute(
+                "SELECT name, specialization, available_days, start_time, end_time "
+                "FROM doctors WHERE LOWER(specialization) LIKE LOWER(?)",
+                (f"%{keyword}%",)
+            ) as cursor:
+                rows = await cursor.fetchall()
+            for row in rows:
+                if row[0] not in seen:
+                    seen.add(row[0])
+                    results.append({
+                        "name": row[0],
+                        "specialization": row[1],
+                        "available_days": row[2],
+                        "start_time": row[3],
+                        "end_time": row[4],
+                    })
+        return results
+
+
+async def get_doctor_day_info(doctor_name: str, appointment_date: str) -> dict | None:
+    """
+    Full picture of a doctor's given day: whether they work that weekday,
+    their working hours, and their existing active bookings on that date.
+    Used to explain WHY a doctor isn't free (outside hours vs. already
+    booked) instead of a bare "not available" — e.g. "she works
+    10:00-18:00, and 09:00 is before she opens" or "she's already booked
+    at 14:00-14:30 that day".
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        resolved_name = await _resolve_doctor_name(db, doctor_name)
+        if not resolved_name:
+            return None
+        async with db.execute(
+            "SELECT name, available_days, start_time, end_time FROM doctors WHERE name = ?",
+            (resolved_name,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        if not row:
+            return None
+        name, available_days, start_time, end_time = row
+        weekday = datetime.strptime(appointment_date, "%Y-%m-%d").strftime("%A")
+        works_that_day = weekday in [d.strip() for d in available_days.split(",")]
+
+        async with db.execute("""
+            SELECT a.appointment_time, a.duration_minutes
+            FROM appointments a
+            JOIN doctors d ON a.doctor_id = d.id
+            WHERE d.name = ? AND a.appointment_date = ? AND a.status = 'active'
+            ORDER BY a.appointment_time
+        """, (resolved_name, appointment_date)) as cursor:
+            bookings = [{"time": r[0], "duration": r[1]} for r in await cursor.fetchall()]
+
+        return {
+            "name": name,
+            "available_days": available_days,
+            "start_time": start_time,
+            "end_time": end_time,
+            "weekday": weekday,
+            "works_that_day": works_that_day,
+            "bookings": bookings,
+        }
+
+
+async def get_appointment_by_id(appointment_id: int) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("""
+            SELECT a.id, a.appointment_date, a.appointment_time, a.duration_minutes,
+                   a.status, a.patient_name, a.patient_email, a.phone_number,
+                   a.reason_for_visit, a.sender_id, d.name AS doctor_name
+            FROM appointments a
+            JOIN doctors d ON a.doctor_id = d.id
+            WHERE a.id = ?
+        """, (appointment_id,)) as cursor:
+            row = await cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "appointment_date": row[1],
+            "appointment_time": row[2],
+            "duration_minutes": row[3],
+            "status": row[4],
+            "patient_name": row[5],
+            "patient_email": row[6],
+            "phone_number": row[7],
+            "reason_for_visit": row[8],
+            "sender_id": row[9],
+            "doctor_name": row[10],
+        }
+
+
+async def get_appointments_by_sender(sender_id: str) -> list[dict]:
+    """Return all active appointments for a given sender_id."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("""
+            SELECT a.id, a.appointment_date, a.appointment_time, a.duration_minutes,
+                   a.status, a.patient_name, a.patient_email, d.name AS doctor_name
+            FROM appointments a
+            JOIN doctors d ON a.doctor_id = d.id
+            WHERE a.sender_id = ? AND a.status = 'active'
+            ORDER BY a.appointment_date, a.appointment_time
+        """, (sender_id,)) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            {
+                "id": row[0],
+                "appointment_date": row[1],
+                "appointment_time": row[2],
+                "duration_minutes": row[3],
+                "status": row[4],
+                "patient_name": row[5],
+                "patient_email": row[6],
+                "doctor_name": row[7],
+            }
+            for row in rows
+        ]
+</file>
+
+<file path="db/schema.py">
+import aiosqlite
+import logging
+from config import DB_PATH
+
+logger = logging.getLogger(__name__)
+
+async def init_db():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS doctors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                specialization TEXT,
+                available_days TEXT,
+                start_time TEXT,
+                end_time TEXT
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS appointments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                doctor_id INTEGER NOT NULL,
+                patient_email TEXT NOT NULL,
+                patient_name TEXT NOT NULL,
+                phone_number TEXT,
+                reason_for_visit TEXT,
+                sender_id TEXT,
+                appointment_date TEXT NOT NULL,
+                appointment_time TEXT NOT NULL,
+                duration_minutes INTEGER DEFAULT 30,
+                status TEXT DEFAULT 'active',
+                FOREIGN KEY (doctor_id) REFERENCES doctors(id)
+            )
+        """)
+        async with db.execute("SELECT COUNT(*) FROM doctors") as cursor:
+            count = (await cursor.fetchone())[0]
+        if count == 0:
+            await _seed_doctors(db)
+        await db.commit()
+        logger.info("Database initialised.")
+
+async def _seed_doctors(db):
+    doctors = [
+        ("Dr. Ananya Sharma",    "General & Preventive Dentistry", "Monday,Wednesday,Friday",                           "09:00", "17:00"),
+        ("Dr. Rohan Mehta",      "Endodontics",                    "Tuesday,Thursday,Saturday",                         "10:00", "18:00"),
+        ("Dr. Priya Nair",       "Orthodontics",                   "Monday,Tuesday,Friday",                             "09:00", "16:00"),
+        ("Dr. Samuel Okafor",    "Oral Surgery",                   "Wednesday,Thursday,Friday",                         "08:00", "15:00"),
+        ("Dr. Liu Wei",          "Cosmetic Dentistry",             "Monday,Wednesday,Saturday",                         "10:00", "18:00"),
+        ("Dr. Fatima Al-Hassan", "Paediatric Dentistry",           "Tuesday,Thursday,Saturday",                         "09:00", "17:00"),
+        ("Dr. Carlos Rivera",    "Periodontics",                   "Monday,Thursday,Friday",                            "08:00", "16:00"),
+        ("Dr. Mei Tanaka",       "Prosthodontics",                 "Tuesday,Wednesday,Saturday",                        "09:00", "17:00"),
+        ("Dr. James O'Brien",    "Emergency Dentistry",            "Monday,Tuesday,Wednesday,Thursday,Friday,Saturday", "08:00", "20:00"),
+        ("Dr. Aisha Patel",      "General Dentistry",              "Wednesday,Thursday,Saturday",                       "10:00", "18:00"),
+        ("Dr. Nikolai Volkov",   "Dental Radiology",               "Monday,Friday",                                     "09:00", "15:00"),
+        ("Dr. Sara Kim",         "Implantology",                   "Tuesday,Thursday",                                  "09:00", "17:00"),
+    ]
+    await db.executemany(
+        "INSERT INTO doctors (name, specialization, available_days, start_time, end_time) VALUES (?, ?, ?, ?, ?)",
+        doctors
+    )
+    logger.info("Seeded %d doctors.", len(doctors))
+</file>
+
+<file path="graph.py">
+import logging
+from langgraph.graph import StateGraph, END
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage, HumanMessage
+from state import GraphState
+from agents import supervisor_node, booking_node, cancellation_node, scheduling_node, knowledge_node
+from config import MODEL_NAME
+
+logger = logging.getLogger(__name__)
+
+
+async def fallback_node(state: GraphState) -> dict:
+    """
+    Safety net only. Normally the supervisor already fills response_message
+    directly (via fallback_response) when intent is null, so this node is
+    skipped entirely — see route_intent. This only runs if the supervisor
+    failed to produce a fallback_response (e.g. malformed JSON), so it's rare.
+    """
+    llm = ChatOpenAI(model=MODEL_NAME, temperature=0.4)
+    response = await llm.ainvoke([
+        SystemMessage(content=(
+            "You are a friendly front-desk assistant at BrightSmile Dental Clinic. "
+            "Respond naturally and warmly to the user's message. "
+            "If they're greeting you, greet them back and briefly mention you can help with "
+            "booking, cancelling, or rescheduling appointments, checking doctor availability, "
+            "or answering questions about the clinic. "
+            "Keep it short — 1 to 3 sentences max. No bullet points."
+        )),
+        HumanMessage(content=state.user_message)
+    ])
+    return {"response_message": response.content.strip()}
+
+
+def route_intent(state: GraphState) -> str:
+    logger.info("Routing intent: %s", state.intent)
+    if state.intent == "book":
+        return "booking"
+    elif state.intent == "cancel":
+        return "cancellation"
+    elif state.intent in ("reschedule", "check_availability"):
+        return "scheduling"
+    elif state.intent == "knowledge":
+        return "knowledge"
+    elif state.intent is None:
+        # Supervisor already answered directly (fallback_response) — skip the
+        # extra LLM call. Only fall through to fallback_node if it didn't.
+        if state.response_message:
+            return "done"
+        return "fallback"
+    else:
+        logger.warning("Unknown intent: %s — routing to fallback", state.intent)
+        return "fallback"
+
+
+def build_graph():
+    graph = StateGraph(GraphState)
+    graph.add_node("supervisor", supervisor_node)
+    graph.add_node("booking", booking_node)
+    graph.add_node("cancellation", cancellation_node)
+    graph.add_node("scheduling", scheduling_node)
+    graph.add_node("knowledge", knowledge_node)
+    graph.add_node("fallback", fallback_node)
+    graph.set_entry_point("supervisor")
+    graph.add_conditional_edges("supervisor", route_intent, {
+        "booking": "booking",
+        "cancellation": "cancellation",
+        "scheduling": "scheduling",
+        "knowledge": "knowledge",
+        "fallback": "fallback",
+        "done": END,
+    })
+    graph.add_edge("booking", END)
+    graph.add_edge("cancellation", END)
+    graph.add_edge("scheduling", END)
+    graph.add_edge("knowledge", END)
+    graph.add_edge("fallback", END)
+    return graph.compile()
+</file>
+
+<file path="main.py">
+import logging
+import uvicorn
+from opik.integrations.langchain import OpikTracer
+
+opik_tracer = OpikTracer()
+
+# Logging is configured in api.py (force=True, runs first in the actual
+# worker process) — not here. See the comment at the top of api.py for why.
+logging.getLogger("watchfiles").setLevel(logging.WARNING)
+
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "api:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        # Broad, defensive excludes. SQLite WAL mode writes *.db-wal / *.db-shm
+        # / *.db-journal continuously — those (not the .db file itself) were
+        # the actual cause of the endless "1 change detected" reload loop.
+        # "**/" prefix is needed so patterns match files inside subfolders too,
+        # not just the project root.
+        reload_excludes=[
+            "*.log", "**/*.log",
+            "*.config", "**/*.config",
+            "*.db", "**/*.db",
+            "*.db-wal", "**/*.db-wal",
+            "*.db-shm", "**/*.db-shm",
+            "*.db-journal", "**/*.db-journal",
+            "chroma_db/*", "**/chroma_db/*",
+            "*.sqlite", "**/*.sqlite",
+            "__pycache__/*", "**/__pycache__/*",
+            ".opik*/*", "**/.opik*/*",
+            "frontend/*", "**/frontend/**",
+
+        ],
+    )
+</file>
+
+<file path="requirements.txt">
+langgraph>=0.2.0
+langchain>=0.3.0
+langchain-openai>=0.2.0
+langchain-chroma>=0.1.0
+langchain-pinecone>=0.1.0
+langchain-milvus>=0.1.0
+langchain-community>=0.3.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+openai>=1.0.0
+aiosqlite>=0.20.0
+fastapi>=0.115.0
+uvicorn>=0.30.0
+chromadb
+pinecone>=5.1.0
+pymilvus>=2.4.0
+unstructured
+grandalf
+</file>
+
+<file path="save_graph.py">
+# save_graph.py
+from graph import build_graph
+
+graph = build_graph()
+
+png_bytes = graph.get_graph().draw_mermaid_png()
+
+with open("graph.png", "wb") as f:
+    f.write(png_bytes)
+
+print("Graph saved to graph.png")
+</file>
+
+<file path="state/__init__.py">
+from .graph_state import GraphState
+</file>
+
+<file path="state/graph_state.py">
+from typing import Optional
+from pydantic import BaseModel
+
+
+class GraphState(BaseModel):
+    user_message: str = ""
+    history: list[dict] = []
+    intent: Optional[str] = None
+    sender_id: Optional[str] = None
+    doctor_name: Optional[str] = None
+    recommended_doctors: list[str] = []
+    appointment_date: Optional[str] = None
+    appointment_time: Optional[str] = None
+    duration_minutes: int = 30
+    patient_name: Optional[str] = None
+    phone_number: Optional[str] = None
+    reason_for_visit: Optional[str] = None
+    specialization_needed: Optional[str] = None
+    invitee_email: Optional[str] = None
+    appointment_id: Optional[int] = None
+    suggested_alternative: Optional[str] = None
+    rebook_requested: bool = False
+    email_sent: bool = False
+    cancellation_confirmed: bool = False
+    response_message: str = ""
+    vector_store: str = "chroma"
+
+    class Config:
+        extra = "forbid"
+</file>
+
+<file path="tests/__init__.py">
+
+</file>
+
+<file path="tools/__init__.py">
+from .booking_tools import (
+    check_doctor_availability,
+    book_appointment,
+    find_alternative_doctor,
+    list_available_doctors,
+    get_doctor_schedule,
+    recommend_doctors,
+)
+from .cancellation_tools import cancel_appointment, get_appointment_details
+from .reschedule_tools import reschedule_appointment, check_reschedule_availability
+from .email_sender import send_invite_email, send_cancellation_email, send_reschedule_email
+
+__all__ = [
+    "check_doctor_availability",
+    "book_appointment",
+    "find_alternative_doctor",
+    "list_available_doctors",
+    "get_doctor_schedule",
+    "recommend_doctors",
+    "cancel_appointment",
+    "get_appointment_details",
+    "reschedule_appointment",
+    "check_reschedule_availability",
+    "send_invite_email",
+    "send_cancellation_email",
+    "send_reschedule_email",
+]
+</file>
+
+<file path="tools/booking_tools.py">
+from langchain_core.tools import tool
+from db import (
+    check_doctor_availability as db_check_availability,
+    create_appointment as db_create_appointment,
+    find_alternative_doctor as db_find_alternative,
+    get_all_doctors as db_get_all_doctors,
+    get_doctor_schedule as db_get_doctor_schedule,
+    get_doctors_by_specialization as db_get_doctors_by_specialization,
+)
+
+REASON_TO_SPECIALIZATIONS = {
+    "toothache / pain":             ["Emergency Dentistry", "Endodontics", "General"],
+    "routine checkup & cleaning":   ["General"],
+    "filling / cavity":             ["General"],
+    "root canal":                   ["Endodontics"],
+    "teeth whitening / cosmetic":   ["Cosmetic"],
+    "braces / aligners":            ["Orthodontics"],
+    "wisdom tooth / extraction":    ["Oral Surgery"],
+    "dental implants":              ["Implantology", "Oral Surgery"],
+    "child / kid's appointment":    ["Paediatric"],
+    "gum problems":                 ["Periodontics"],
+    "crowns / bridges / dentures":  ["Prosthodontics"],
+    "emergency":                    ["Emergency Dentistry"],
+    "other":                        ["General"],
+}
+
+@tool
+async def check_doctor_availability(doctor_name: str, appointment_date: str, appointment_time: str, duration_minutes: int = 30) -> str:
+    """Check if a doctor is available on a given date and time for a given duration."""
+    available = await db_check_availability(doctor_name, appointment_date, appointment_time, duration_minutes)
+    if available:
+        return f"{doctor_name} is available on {appointment_date} at {appointment_time} for {duration_minutes} minutes."
+    return f"{doctor_name} is not available on {appointment_date} at {appointment_time} for {duration_minutes} minutes."
+
+@tool
+async def book_appointment(doctor_name: str, patient_name: str, patient_email: str, appointment_date: str, appointment_time: str, duration_minutes: int = 30, phone_number: str = None, reason_for_visit: str = None) -> str:
+    """Book an appointment with a doctor for a given date, time and duration."""
+    appointment_id = await db_create_appointment(
+        doctor_name, patient_name, patient_email,
+        appointment_date, appointment_time, duration_minutes,
+        phone_number=phone_number, reason_for_visit=reason_for_visit
+    )
+    return f"Appointment confirmed. Appointment ID is {appointment_id}. Duration: {duration_minutes} minutes."
+
+@tool
+async def find_alternative_doctor(doctor_name: str, appointment_date: str, appointment_time: str, duration_minutes: int = 30) -> str:
+    """Find an alternative available doctor when the requested doctor is unavailable."""
+    alternative = await db_find_alternative(doctor_name, appointment_date, appointment_time, duration_minutes)
+    if alternative:
+        return f"{alternative} is available on {appointment_date} at {appointment_time} for {duration_minutes} minutes."
+    return "No alternative doctors are available at that time."
+
+@tool
+async def list_available_doctors(appointment_date: str, appointment_time: str, duration_minutes: int = 30) -> str:
+    """List all doctors available on a given date and time for a given duration."""
+    doctors = await db_get_all_doctors()
+    available = []
+    for doctor in doctors:
+        is_available = await db_check_availability(doctor, appointment_date, appointment_time, duration_minutes)
+        if is_available:
+            available.append(doctor)
+    if available:
+        return f"Available doctors on {appointment_date} at {appointment_time}: {', '.join(available)}."
+    return f"No doctors are available on {appointment_date} at {appointment_time}."
+
+@tool
+async def get_doctor_schedule(doctor_name: str) -> str:
+    """Get a doctor's general working days and hours when no specific date/time is given."""
+    schedule = await db_get_doctor_schedule(doctor_name)
+    if not schedule:
+        return f"Could not find a doctor matching '{doctor_name}'."
+    return (
+        f"{schedule['name']} is available on {schedule['available_days']} "
+        f"from {schedule['start_time']} to {schedule['end_time']}."
+    )
+
+@tool
+async def recommend_doctors(reason_for_visit: str, appointment_date: str = None, appointment_time: str = None, duration_minutes: int = 30) -> str:
+    """
+    Find and return doctors matching the patient's reason for visit.
+    If appointment_date and appointment_time are provided, only returns doctors available at that slot.
+    If no date/time provided, returns all matching doctors with their schedules.
+    """
+    reason_lower = reason_for_visit.lower().strip()
+
+    specializations = None
+    for key, specs in REASON_TO_SPECIALIZATIONS.items():
+        if any(word in reason_lower for word in key.split(" / ")) or key in reason_lower:
+            specializations = specs
+            break
+
+    if not specializations:
+        specializations = ["General"]
+
+    doctors = await db_get_doctors_by_specialization(specializations)
+
+    if not doctors:
+        return "no_matching_doctors"
+
+    if appointment_date and appointment_time:
+        available = []
+        for doc in doctors:
+            if await db_check_availability(doc["name"], appointment_date, appointment_time, duration_minutes):
+                available.append(doc)
+        if not available:
+            return f"no_available_doctors_for_slot|searched={[d['name'] for d in doctors]}"
+        return str(available)
+
+    return str(doctors)
+</file>
+
+<file path="tools/cancellation_tools.py">
+from langchain_core.tools import tool
+from db import (
+    cancel_appointment_with_ownership as db_cancel_with_ownership,
+    get_appointment_by_id as db_get_appointment_by_id,
+)
+
+
+@tool
+async def get_appointment_details(appointment_id: int) -> str:
+    """Look up an appointment's doctor, date, time, and patient email by its ID."""
+    appt = await db_get_appointment_by_id(appointment_id)
+    if not appt:
+        return f"No appointment found with ID {appointment_id}."
+    return (
+        f"Appointment {appt['id']}: doctor_name={appt['doctor_name']}, "
+        f"appointment_date={appt['appointment_date']}, appointment_time={appt['appointment_time']}, "
+        f"patient_email={appt['patient_email']}, status={appt['status']}"
+    )
+
+
+@tool
+async def cancel_appointment(appointment_id: int, patient_email: str) -> str:
+    """
+    Cancel an active appointment by its ID.
+    Only succeeds if the appointment belongs to patient_email.
+    """
+    result = await db_cancel_with_ownership(appointment_id, patient_email)
+    if result["success"]:
+        return f"Appointment {appointment_id} has been successfully cancelled."
+    if result["reason"] == "not_found":
+        return f"No appointment found with ID {appointment_id}."
+    if result["reason"] == "not_owner":
+        return f"Appointment {appointment_id} does not belong to your account and cannot be cancelled."
+    if result["reason"] == "already_cancelled":
+        return f"Appointment {appointment_id} is already cancelled."
+    return f"Could not cancel appointment {appointment_id}."
+</file>
+
+<file path="tools/email_sender.py">
+import asyncio
+import smtplib
+import logging
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from langchain_core.tools import tool
+from config import SMTP_HOST, SMTP_PORT, SMTP_PASSWORD, SMTP_SENDER
+
+logger = logging.getLogger(__name__)
+
+
+def _send(msg: MIMEMultipart, to_email: str):
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        server.starttls()
+        server.login(SMTP_SENDER, SMTP_PASSWORD)
+        server.sendmail(SMTP_SENDER, to_email, msg.as_string())
+
+
+@tool
+async def send_invite_email(to_email: str, doctor_name: str, booking_date: str, booking_time: str, appointment_id: int) -> str:
+    """Send a booking confirmation email to the patient."""
+    msg = MIMEMultipart("alternative")
+    msg["From"] = SMTP_SENDER
+    msg["To"] = to_email
+    msg["Subject"] = f"Confirmed: Dental Appointment with {doctor_name}"
+
+    text_fallback = (
+        f"Appointment Confirmation\n\n"
+        f"Your dental appointment has been scheduled successfully.\n"
+        f"Appointment ID: {appointment_id}\n"
+        f"Practitioner: {doctor_name}\n"
+        f"Date: {booking_date}\n"
+        f"Time: {booking_time}\n\n"
+        f"Please arrive 10 minutes prior to your time."
+    )
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f0f4f8; color: #334155; margin: 0; padding: 0; }}
+            .email-container {{ max-width: 550px; margin: 40px auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; }}
+            .header {{ background-color: #0f766e; color: #ffffff; padding: 25px; text-align: center; }}
+            .header h2 {{ margin: 0; font-size: 22px; font-weight: 500; letter-spacing: 0.5px; }}
+            .content {{ padding: 30px; line-height: 1.6; }}
+            .appointment-card {{ background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin: 20px 0; }}
+            .info-row {{ margin-bottom: 12px; font-size: 14px; border-bottom: 1px dashed #e2e8f0; padding-bottom: 8px; }}
+            .info-row:last-child {{ border-bottom: none; padding-bottom: 0; margin-bottom: 0; }}
+            .label {{ font-weight: 600; color: #64748b; display: inline-block; width: 120px; }}
+            .value {{ color: #0f172a; font-weight: 500; }}
+            .footer {{ background-color: #f1f5f9; padding: 20px; text-align: center; font-size: 11px; color: #94a3b8; line-height: 1.5; border-top: 1px solid #e2e8f0; }}
+        </style>
+    </head>
+    <body>
+        <div class="email-container">
+            <div class="header"><h2>Appointment Confirmed</h2></div>
+            <div class="content">
+                <p>Hello,</p>
+                <p>Your upcoming dental visit has been successfully scheduled:</p>
+                <div class="appointment-card">
+                    <div class="info-row"><span class="label">Appointment ID:</span><span class="value">{appointment_id}</span></div>
+                    <div class="info-row"><span class="label">Practitioner:</span><span class="value">{doctor_name}</span></div>
+                    <div class="info-row"><span class="label">Date:</span><span class="value">{booking_date}</span></div>
+                    <div class="info-row"><span class="label">Arrival Time:</span><span class="value" style="color:#0f766e;font-weight:bold;">{booking_time}</span></div>
+                </div>
+                <p style="font-size:13px;color:#64748b;"><em>Please arrive 10 minutes prior to your appointment.</em></p>
+            </div>
+            <div class="footer">BrightSmile Dental Clinic &copy; 2026<br>To modify your appointment, message our virtual coordinator.</div>
+        </div>
+    </body>
+    </html>
+    """
+
+    msg.attach(MIMEText(text_fallback, "plain"))
+    msg.attach(MIMEText(html_content, "html"))
+    try:
+        await asyncio.to_thread(_send, msg, to_email)
+        logger.info("Invite sent to %s", to_email)
+        return f"Invite email successfully sent to {to_email}."
+    except Exception as e:
+        logger.error("Failed to send invite email: %s", e)
+        return f"Failed to send email to {to_email}: {str(e)}"
+
+
+@tool
+async def send_cancellation_email(to_email: str, doctor_name: str, booking_date: str, booking_time: str, appointment_id: int) -> str:
+    """Send a cancellation confirmation email to the patient."""
+    msg = MIMEMultipart("alternative")
+    msg["From"] = SMTP_SENDER
+    msg["To"] = to_email
+    msg["Subject"] = f"Cancelled: Dental Appointment with {doctor_name}"
+
+    text_fallback = (
+        f"Appointment Cancellation\n\n"
+        f"Your dental appointment has been cancelled.\n"
+        f"Appointment ID: {appointment_id}\n"
+        f"Practitioner: {doctor_name}\n"
+        f"Date: {booking_date}\n"
+        f"Time: {booking_time}\n\n"
+        f"If this was a mistake, or you'd like to rebook, just let us know."
+    )
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f0f4f8; color: #334155; margin: 0; padding: 0; }}
+            .email-container {{ max-width: 550px; margin: 40px auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; }}
+            .header {{ background-color: #b91c1c; color: #ffffff; padding: 25px; text-align: center; }}
+            .header h2 {{ margin: 0; font-size: 22px; font-weight: 500; }}
+            .content {{ padding: 30px; line-height: 1.6; }}
+            .appointment-card {{ background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin: 20px 0; }}
+            .info-row {{ margin-bottom: 12px; font-size: 14px; border-bottom: 1px dashed #e2e8f0; padding-bottom: 8px; }}
+            .info-row:last-child {{ border-bottom: none; padding-bottom: 0; margin-bottom: 0; }}
+            .label {{ font-weight: 600; color: #64748b; display: inline-block; width: 120px; }}
+            .value {{ color: #0f172a; font-weight: 500; }}
+            .footer {{ background-color: #f1f5f9; padding: 20px; text-align: center; font-size: 11px; color: #94a3b8; border-top: 1px solid #e2e8f0; }}
+        </style>
+    </head>
+    <body>
+        <div class="email-container">
+            <div class="header"><h2>Appointment Cancelled</h2></div>
+            <div class="content">
+                <p>Hello,</p>
+                <p>The following appointment has been cancelled:</p>
+                <div class="appointment-card">
+                    <div class="info-row"><span class="label">Appointment ID:</span><span class="value">{appointment_id}</span></div>
+                    <div class="info-row"><span class="label">Practitioner:</span><span class="value">{doctor_name}</span></div>
+                    <div class="info-row"><span class="label">Date:</span><span class="value">{booking_date}</span></div>
+                    <div class="info-row"><span class="label">Time:</span><span class="value">{booking_time}</span></div>
+                </div>
+                <p style="font-size:13px;color:#64748b;">If you'd like to rebook, just message us anytime.</p>
+            </div>
+            <div class="footer">BrightSmile Dental Clinic &copy; 2026</div>
+        </div>
+    </body>
+    </html>
+    """
+
+    msg.attach(MIMEText(text_fallback, "plain"))
+    msg.attach(MIMEText(html_content, "html"))
+    try:
+        await asyncio.to_thread(_send, msg, to_email)
+        logger.info("Cancellation email sent to %s", to_email)
+        return f"Cancellation email successfully sent to {to_email}."
+    except Exception as e:
+        logger.error("Failed to send cancellation email: %s", e)
+        return f"Failed to send cancellation email to {to_email}: {str(e)}"
+
+
+@tool
+async def send_reschedule_email(to_email: str, doctor_name: str, new_date: str, new_time: str, appointment_id: int) -> str:
+    """Send a reschedule confirmation email to the patient."""
+    msg = MIMEMultipart("alternative")
+    msg["From"] = SMTP_SENDER
+    msg["To"] = to_email
+    msg["Subject"] = f"Updated: Dental Appointment with {doctor_name}"
+
+    text_fallback = (
+        f"Appointment Rescheduled\n\n"
+        f"Your dental appointment has been updated.\n"
+        f"Appointment ID: {appointment_id}\n"
+        f"Practitioner: {doctor_name}\n"
+        f"New Date: {new_date}\n"
+        f"New Time: {new_time}\n\n"
+        f"Please arrive 10 minutes prior to your time."
+    )
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f0f4f8; color: #334155; margin: 0; padding: 0; }}
+            .email-container {{ max-width: 550px; margin: 40px auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; }}
+            .header {{ background-color: #1d4ed8; color: #ffffff; padding: 25px; text-align: center; }}
+            .header h2 {{ margin: 0; font-size: 22px; font-weight: 500; letter-spacing: 0.5px; }}
+            .content {{ padding: 30px; line-height: 1.6; }}
+            .appointment-card {{ background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin: 20px 0; }}
+            .info-row {{ margin-bottom: 12px; font-size: 14px; border-bottom: 1px dashed #e2e8f0; padding-bottom: 8px; }}
+            .info-row:last-child {{ border-bottom: none; padding-bottom: 0; margin-bottom: 0; }}
+            .label {{ font-weight: 600; color: #64748b; display: inline-block; width: 120px; }}
+            .value {{ color: #0f172a; font-weight: 500; }}
+            .footer {{ background-color: #f1f5f9; padding: 20px; text-align: center; font-size: 11px; color: #94a3b8; line-height: 1.5; border-top: 1px solid #e2e8f0; }}
+        </style>
+    </head>
+    <body>
+        <div class="email-container">
+            <div class="header"><h2>Appointment Rescheduled</h2></div>
+            <div class="content">
+                <p>Hello,</p>
+                <p>Your dental appointment has been updated to a new date and time:</p>
+                <div class="appointment-card">
+                    <div class="info-row"><span class="label">Appointment ID:</span><span class="value">{appointment_id}</span></div>
+                    <div class="info-row"><span class="label">Practitioner:</span><span class="value">{doctor_name}</span></div>
+                    <div class="info-row"><span class="label">New Date:</span><span class="value">{new_date}</span></div>
+                    <div class="info-row"><span class="label">New Time:</span><span class="value" style="color:#1d4ed8;font-weight:bold;">{new_time}</span></div>
+                </div>
+                <p style="font-size:13px;color:#64748b;"><em>Please arrive 10 minutes prior to your appointment.</em></p>
+            </div>
+            <div class="footer">BrightSmile Dental Clinic &copy; 2026<br>To modify again, message our virtual coordinator.</div>
+        </div>
+    </body>
+    </html>
+    """
+
+    msg.attach(MIMEText(text_fallback, "plain"))
+    msg.attach(MIMEText(html_content, "html"))
+    try:
+        await asyncio.to_thread(_send, msg, to_email)
+        logger.info("Reschedule email sent to %s", to_email)
+        return f"Reschedule confirmation email successfully sent to {to_email}."
+    except Exception as e:
+        logger.error("Failed to send reschedule email: %s", e)
+        return f"Failed to send reschedule email to {to_email}: {str(e)}"
+</file>
+
+</files>
