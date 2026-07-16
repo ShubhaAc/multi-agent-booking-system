@@ -36,28 +36,6 @@ def _load_full_document(filename: str) -> str:
         return ""
 
 
-# ---------------------------------------------------------------------------
-# Deterministic routing for service/treatment questions.
-#
-# OVERVIEW  - "what services do you offer?", "what treatments do you have?"
-#             -> hard-coded category summary, parsed from services.md's
-#                headings. No LLM call, no retrieval — so there's no
-#                context in play for the model to blend across files
-#                (this is what let doctor names from doctors.md bleed in).
-#
-# DETAIL    - "show all services", "give me the complete list", "full list"
-#             -> raw services.md content, returned as-is. Still no LLM call:
-#                the model was previously being told not to summarize/omit
-#                anything, which is exactly what "return the file" does
-#                deterministically without the hallucination risk.
-#
-# Both bypass the semantic FAQ cache too — they're already O(1) and
-# deterministic, so caching adds risk (a differently-phrased, personalized
-# question matching by embedding similarity later) with no upside.
-#
-# DETAIL is checked before OVERVIEW: "what are all the services you offer"
-# matches both patterns, and "all" is the more specific signal.
-# ---------------------------------------------------------------------------
 
 _SERVICES_DETAIL_PATTERN = re.compile(
     r"\ball\s+(the\s+|your\s+)?(services|treatments)\b"
@@ -82,8 +60,7 @@ _SERVICES_HEADING_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 
 
 def _build_services_overview(markdown: str) -> str:
-    """Category-only summary, parsed from services.md's ## headings so this
-    can never drift out of sync with the actual service list."""
+
     categories = _SERVICES_HEADING_RE.findall(markdown)
     if not categories:
         return (
@@ -100,12 +77,7 @@ def _build_services_overview(markdown: str) -> str:
 
 
 async def _semantic_cache_lookup(question: str) -> str | None:
-    """Embed the question and compare it against every cached FAQ entry by
-    cosine similarity. This is what actually handles "what services do you
-    provide" vs "what are the services" vs "what do you offer" — an exact or
-    normalized string match would treat those as three different questions
-    and miss the cache every time; embeddings put them close together in
-    vector space regardless of exact wording."""
+   
     index = await get_faq_index()
     if not index:
         return None
@@ -146,11 +118,7 @@ def format_docs(docs):
 
 
 def _known_context(state: GraphState) -> str:
-    """Known booking fields, compact form, so follow-ups like "price for this",
-    "my doctor", or "what's my name" resolve without the user repeating
-    themselves. patient_name/phone/email were missing here before — the
-    knowledge agent had no way to answer identity questions even though
-    that data was already sitting in state."""
+
     fields = [
         state.patient_name and f"patient_name={state.patient_name}",
         state.phone_number and f"phone_number={state.phone_number}",
@@ -176,9 +144,7 @@ def _recent_history(state: GraphState, limit: int = 4) -> str:
 async def knowledge_node(state: GraphState) -> dict:
     logger.info("Knowledge agent started.")
 
-    # Deterministic service-query routing runs first, before caching, RAG,
-    # or any LLM call — so broad "what do you offer" questions can never
-    # pick up unrelated context (e.g. a doctor's name) from other documents.
+    
     if _SERVICES_DETAIL_PATTERN.search(state.user_message):
         logger.info("Services-detail intent detected — returning raw services.md, no LLM.")
         full_doc = _load_full_document("services.md")

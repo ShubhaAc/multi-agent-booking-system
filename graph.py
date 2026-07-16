@@ -10,12 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 async def fallback_node(state: GraphState) -> dict:
-    """
-    Safety net only. Normally the supervisor already fills response_message
-    directly (via fallback_response) when intent is null, so this node is
-    skipped entirely — see route_intent. This only runs if the supervisor
-    failed to produce a fallback_response (e.g. malformed JSON), so it's rare.
-    """
+  
     llm = ChatOpenAI(model=MODEL_NAME, temperature=0.4)
     response = await llm.ainvoke([
         SystemMessage(content=(

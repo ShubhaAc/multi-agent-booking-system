@@ -14,6 +14,8 @@ from tools.email_sender import send_invite_email
 from agents.scheduling_agent import _explain_unavailable_with_specialist
 from config import MODEL_NAME
 
+
+
 logger = logging.getLogger(__name__)
 llm = ChatOpenAI(model=MODEL_NAME, temperature=0)
 
@@ -104,14 +106,6 @@ async def _recommend_doctors_response(state: GraphState) -> str:
             for d in doctors_to_show
         )
 
-    # Every doctor that reaches this point already matches the patient's
-    # reason for visit (and, if a slot was given, is free at it) — so all of
-    # them are genuinely relevant options. Previously the prompt told the
-    # model to "mention a second specialist only if clearly relevant", which
-    # caused it to silently drop the second (or third) matching doctor from
-    # its reply even though the patient had no way of knowing others
-    # existed. Now we explicitly require every name in doctors_to_show to be
-    # mentioned, and ask the patient to choose when there's more than one.
     doctor_count = len(doctors_to_show)
     if doctor_count > 1:
         mention_instruction = (

@@ -1,14 +1,4 @@
-"""
-One-off hotfix: remove intent/field lines from skills/supervisor/best_skill.md
-that don't exist in agents.supervisor.SupervisorOutput's schema.
 
-Run this from your repo root (where `skills/` and `agents/` live):
-    python strip_schema_drift.py
-
-It edits both best_skill.md (what's actually loaded at inference time) and
-skill.md (the working copy, so the next training step doesn't just
-reintroduce the same drift from the pre-hotfix working copy).
-"""
 import re
 
 BEST_PATH = "skills/supervisor/best_skill.md"

@@ -1,13 +1,11 @@
 """
-Standalone diagnostic — read-only, never touches best_skill.md, never calls
+read-only, never touches best_skill.md, never calls
 the optimizer or the gate. Just runs the forward pass on train.jsonl against
 the CURRENT best_skill.md and breaks down exactly where the failures are.
 
-Usage (from repo root, same venv you already use for training):
     python -m skillopt.diagnose --skill supervisor
-
-Drop this file at: skillopt/diagnose.py
 """
+
 from __future__ import annotations
 
 import argparse

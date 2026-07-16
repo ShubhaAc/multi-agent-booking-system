@@ -1,19 +1,4 @@
-"""
-Holding area between skillopt/sleep.py (which mines candidate training rows
-out of production traces) and data/skillopt/train.jsonl (which the training
-loop treats as gold-labeled ground truth).
 
-The old sleep.py wrote mined rows straight into train.jsonl using the
-supervisor's OWN production output as expected_output — i.e. training the
-skill to keep producing whatever it already produced, bugs included. This
-module exists so that never happens again: mined rows always land here
-first, and only move into train.jsonl via approve(), which requires an
-explicit (possibly corrected) expected_output rather than trusting the
-mined one blindly.
-
-Storage: one JSON file per skill_id, same pattern as rejected_buffer.py —
-small, append-mostly, human-inspectable, worth more here than a database.
-"""
 
 from __future__ import annotations
 
@@ -45,13 +30,7 @@ def _save(skill_id: str, entries: list[dict]) -> None:
 
 
 def add(skill_id: str, rows: list[dict]) -> list[str]:
-    """Appends mined rows to the pending queue. Each row must already have
-    the shape {"input": {...}, "expected_output": {...}}. expected_output at
-    this point is the supervisor's raw production output — labeled clearly
-    as UNVERIFIED until a human/judge approves or corrects it.
-
-    Returns the list of ids assigned, so callers (sleep.py) can log them.
-    """
+    
     entries = load(skill_id)
     now = datetime.now(timezone.utc).isoformat()
     assigned_ids = []
@@ -61,7 +40,7 @@ def add(skill_id: str, rows: list[dict]) -> list[str]:
         entries.append({
             "id": row_id,
             "input": row["input"],
-            "mined_expected_output": row["expected_output"],  # UNVERIFIED — model's own output
+            "mined_expected_output": row["expected_output"],  
             "flag_reasons": row.get("flag_reasons", []),
             "status": "pending",
             "mined_at": now,
@@ -121,9 +100,7 @@ def approve(
 
 
 def reject(skill_id: str, row_id: str, reason: str = "") -> bool:
-    """Marks a pending row rejected without promoting it. Kept in the file
-    (not deleted) so the review history is auditable — same reasoning as
-    rejected_buffer.py keeping losing patches around."""
+    
     entries = load(skill_id)
     target = None
     for entry in entries:

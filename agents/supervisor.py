@@ -218,11 +218,7 @@ _TITLE_WORDS = {"dr", "dr.", "doctor"}
 
 
 def _doctor_mentioned_in_message(doctor_name: str, message: str) -> bool:
-    """Whether a doctor's name is actually referenced in the raw message
-    (full name, or any individual name component), rather than trusting the
-    model's own claim about who the patient picked. Used to guard against
-    the LLM silently attaching a doctor from earlier recommendations/history
-    to a message that never actually named one."""
+  
     if not doctor_name:
         return False
     msg_lower = message.lower()
@@ -259,8 +255,7 @@ async def supervisor_node(state: GraphState) -> dict:
     logger.info("Supervisor processing message: %s", state.user_message)
     today_date = date.today()
 
-    # FAST PATH — zero LLM calls, zero tokens.
-    # A bare "ok"/"yes" confirming a doctor we already suggested, or a bare "no"/"cancel that", is fully deterministic. 
+    
     if _AFFIRMATIVE_PATTERN.match(state.user_message) and state.suggested_alternative:
         logger.info(
             "Fast-path: affirmative confirmation of suggested_alternative=%r — skipping LLM call.",
@@ -335,15 +330,12 @@ async def supervisor_node(state: GraphState) -> dict:
     )
 
     response = await structured_llm.ainvoke([
-        SystemMessage(content=STATIC_INSTRUCTIONS),   # identical every call → cache-eligible
-        SystemMessage(content=dynamic_context),        # changes every call, but small
+        SystemMessage(content=STATIC_INSTRUCTIONS),   
+        SystemMessage(content=dynamic_context),        
         HumanMessage(content=state.user_message),
     ])
 
-    # include_raw=True returns {"raw": AIMessage, "parsed": SupervisorOutput,
-    # "parsing_error": ...}. usage_metadata (and cache info) only lives on
-    # "raw" — the previous version passed the parsed object straight to
-    # _log_llm_usage, which silently always logged 0/0.
+   
     raw_message = response["raw"]
     parsed_output: SupervisorOutput = response["parsed"]
 
@@ -415,15 +407,7 @@ async def supervisor_node(state: GraphState) -> dict:
 
     raw_doctor_name = parsed.get("doctor_name")
     if parsed.get("clear_doctor"):
-        # Model schema says "never with doctor_name set", but in practice the
-        # model frequently sets clear_doctor=True AND echoes the currently
-        # pinned doctor into doctor_name anyway (e.g. "another doctor same
-        # time" -> doctor_name='Dr. Ananya Sharma', clear_doctor=True). The
-        # old code only treated clear_doctor as authoritative when
-        # doctor_name was None, so that echoed name silently won every time
-        # and the doctor was never actually cleared. Now: only let a
-        # doctor_name override clear_doctor if it's a genuine replacement
-        # actually named in this message; otherwise the clear wins.
+        
         if raw_doctor_name and _doctor_mentioned_in_message(raw_doctor_name, state.user_message):
             logger.info(
                 "clear_doctor=True but %r is genuinely named in message %r — treating as a replacement pick, not a clear.",
@@ -446,33 +430,7 @@ async def supervisor_node(state: GraphState) -> dict:
         logger.info("Detected 'any doctor' phrasing — routing through CLEAR sentinel.")
         raw_doctor_name = "CLEAR"
 
-    # ------------------------------------------------------------------
-    # AMBIGUOUS-RECOMMENDATION GUARD
-    #
-    # When booking_agent has just presented 2+ candidate doctors
-    # (state.recommended_doctors) and none has been pinned yet, the model
-    # sometimes fills doctor_name anyway — despite its own field
-    # instruction to extract "THIS message only, never from history" — by
-    # picking one of the recommended names off the top of its head. E.g.
-    # "I am free on Wednesday" (no doctor mentioned at all) was parsed
-    # with doctor_name="Dr. Ananya Sharma" simply because she was listed
-    # first among two doctors both available that day. That silently
-    # commits the patient to a doctor they never actually chose, skipping
-    # the "who would you prefer?" step entirely.
-    #
-    # Guard: if a doctor_name was extracted but isn't literally referenced
-    # anywhere in the raw user message, and multiple candidates are still
-    # in play, discard it — UNLESS the message contains a genuine
-    # comparative/preference signal (e.g. "the more experienced doctor",
-    # "the senior one"). That phrasing is a real, groundable coreference
-    # to whichever candidate the assistant itself already distinguished by
-    # that trait in its previous turn (e.g. "Dr. Sharma has 12 years of
-    # experience...") — not a hallucination — so the model's resolution is
-    # trusted there. Without this carve-out, a patient who answers a
-    # legitimate "who's better?" follow-up with "I'll take the more
-    # experienced one" gets stuck in an infinite "who would you prefer?"
-    # loop, since they never literally say the doctor's name.
-    # ------------------------------------------------------------------
+ 
     if (
         raw_doctor_name
         and raw_doctor_name != "CLEAR"
@@ -541,41 +499,7 @@ async def supervisor_node(state: GraphState) -> dict:
         _EXPLICIT_DATE_PATTERN.search(state.user_message)
     ) or bool(_MONTH_NAME_DATE_PATTERN.search(state.user_message))
 
-    # ------------------------------------------------------------------
-    # DATE RESOLUTION — this is the part that was producing wrong dates.
-    #
-    # The model is told (see SupervisorOutput.appointment_date docstring)
-    # to leave appointment_date null whenever it fills relative_date_phrase
-    # instead. In practice it doesn't always follow that: it sometimes
-    # fills BOTH, and its own raw appointment_date guess is frequently
-    # wrong (LLMs are unreliable at day-of-week arithmetic). When that
-    # raw, wrong value leaks through — via this field or a later
-    # carry-forward — a user asking for "Monday" can end up with a
-    # Saturday's date silently substituted, which then either books the
-    # wrong day outright or gets rejected by the availability check for
-    # a day the user never actually asked about, both very confusing.
-    #
-    # Fix has three parts:
-    #   1. UNPROMPTED DATE GUARD (new): if the CURRENT message has no date
-    #      reference at all — no weekday word, no explicit date, no
-    #      relative phrase — but the model still emits a raw
-    #      appointment_date anyway, that's a hallucinated guess, not an
-    #      intentional update. E.g. "1 PM" (just a time) got parsed with
-    #      appointment_date='2026-07-20' out of nowhere, and because
-    #      carry-forward treats any non-null model value as authoritative,
-    #      it silently clobbered an already-correct carried-forward date
-    #      from an earlier turn. Mirrors the doctor_name hallucination
-    #      guard above — discard it so carry-forward keeps the old value.
-    #   2. If the model filled both appointment_date and relative_date_phrase,
-    #      the raw appointment_date is discarded outright — the phrase
-    #      (deterministically resolved) is authoritative, never the
-    #      model's own date math.
-    #   3. A final, UNCONDITIONAL sanity check below cross-verifies the
-    #      resolved date's actual weekday against any weekday word found
-    #      in the raw message, regardless of which path produced the
-    #      date — this is a safety net that catches drift from any
-    #      source, not just "the phrase resolver returned nothing".
-    # ------------------------------------------------------------------
+    
     if (
         parsed.get("appointment_date")
         and not relative_phrase
@@ -627,10 +551,7 @@ async def supervisor_node(state: GraphState) -> dict:
     else:
         resolved_appointment_time = _carry_forward(parsed, "appointment_time", state.appointment_time)
 
-    # A doctor decision was actually made/changed this turn -> the old
-    # candidate list no longer represents an open question, clear it.
-    # Otherwise (still no doctor pinned, or unchanged) keep it so the
-    # ambiguous-recommendation guard above has something to check next turn.
+   
     resolved_recommended_doctors = (
         [] if resolved_doctor_name != state.doctor_name else state.recommended_doctors
     )

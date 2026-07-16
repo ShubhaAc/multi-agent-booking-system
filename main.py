@@ -11,7 +11,7 @@ def setup_global_logging():
     os.makedirs(log_dir, exist_ok=True)
     log_file_path = os.path.join(log_dir, "app.log")
 
-    # Define a highly detailed format for file logging (includes timestamps, modules, line numbers)
+    # Define a detailed format for file logging (includes timestamps, modules, line numbers)
     file_formatter = logging.Formatter(
         '%(asctime)s.%(msecs)03d | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
@@ -45,7 +45,6 @@ def setup_global_logging():
     root_logger.addHandler(console_handler)
 
     # 2. Silence Noisy Third-Party Frameworks
-    # Mute structural libraries that flood the debug stream during execution
     logging.getLogger("watchfiles").setLevel(logging.WARNING)
     logging.getLogger("chromadb").setLevel(logging.WARNING)
     logging.getLogger("openai").setLevel(logging.WARNING)

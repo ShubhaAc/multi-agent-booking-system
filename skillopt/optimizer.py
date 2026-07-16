@@ -1,18 +1,3 @@
-"""
-Backward pass: turn a batch of scored trajectories (verifier.TrajectoryScore)
-into a bounded set of add/delete/replace patches against the current skill.
-
-Uses structured output (same pattern as agents/supervisor.py's
-SupervisorOutput) instead of asking the optimizer model for free-form JSON
-and hand-parsing it — that removes an entire class of "the model wrapped its
-JSON in a code fence" failures for free.
-
-This module never writes to disk and never decides whether a patch gets kept
-— it only proposes. skill_store.apply_patches() applies the proposal to get
-a candidate text, and validation_gate.py decides whether that candidate
-replaces best_skill.md.
-"""
-
 from __future__ import annotations
 
 import json
@@ -60,12 +45,7 @@ def select_minibatch(
     failures: list[TrajectoryScore],
     minibatch_size: int = MINIBATCH_SIZE,
 ) -> list[TrajectoryScore]:
-    """Failures first (that's the actual gradient signal), successes fill
-    the remainder so the optimizer has something to protect (Step 1 of the
-    optimizer prompt). If there are more failures than minibatch_size, the
-    excess is left for a later cycle rather than truncated arbitrarily —
-    caller (skillopt/cli.py) is responsible for looping until failures run
-    out or EDIT_BUDGET stops producing accepted patches."""
+ 
     batch = failures[:minibatch_size]
     remaining = minibatch_size - len(batch)
     if remaining > 0:
@@ -124,10 +104,7 @@ async def propose_patches(
     edit_budget: int,
     callbacks=None,
 ) -> OptimizerOutput:
-    """Calls the optimizer LLM once and returns a validated OptimizerOutput.
-    If MINIBATCH has no failures, short-circuits without a call — the
-    optimizer prompt forbids cosmetic edits on an all-success batch, so
-    there's nothing useful an API call could produce here."""
+    
     if not any(t.label == "failure" for t in minibatch):
         return OptimizerOutput(gradient_summary="No failures in this minibatch — nothing to patch.")
 
@@ -158,8 +135,7 @@ async def propose_patches(
 
 
 def to_skill_store_patches(output: OptimizerOutput) -> list[Patch]:
-    """Convert the optimizer's PatchOut objects into skill_store.Patch
-    objects ready for skill_store.apply_patches()."""
+    
     return [
         Patch(
             op=p.op,

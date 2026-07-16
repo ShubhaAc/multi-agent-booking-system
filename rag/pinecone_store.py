@@ -18,16 +18,7 @@ def get_pinecone_retriever():
 
 
 def upsert_pinecone():
-    """
-    Clear ALL existing vectors currently in the Pinecone index, then
-    re-ingest fresh from data/*.md. Full clear-then-rebuild — not an
-    incremental upsert — so stale/orphaned chunks from a previous ingest
-    never linger alongside the new ones.
 
-    Note: index.delete(delete_all=True) targets the default namespace ("").
-    If you ingest into a non-default namespace elsewhere, pass
-    namespace=... to both this delete call and from_documents below.
-    """
     embeddings = OpenAIEmbeddings(model="text-embedding-3-small", dimensions=768)
     chunks, ids = load_chunks_with_ids()
 

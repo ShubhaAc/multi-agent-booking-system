@@ -32,6 +32,8 @@ async def check_doctor_availability(doctor_name: str, appointment_date: str, app
         return f"{doctor_name} is available on {appointment_date} at {appointment_time} for {duration_minutes} minutes."
     return f"{doctor_name} is not available on {appointment_date} at {appointment_time} for {duration_minutes} minutes."
 
+
+
 @tool
 async def book_appointment(doctor_name: str, patient_name: str, patient_email: str, appointment_date: str, appointment_time: str, duration_minutes: int = 30, phone_number: str = None, reason_for_visit: str = None) -> str:
     """Book an appointment with a doctor for a given date, time and duration."""
@@ -42,6 +44,8 @@ async def book_appointment(doctor_name: str, patient_name: str, patient_email: s
     )
     return f"Appointment confirmed. Appointment ID is {appointment_id}. Duration: {duration_minutes} minutes."
 
+
+
 @tool
 async def find_alternative_doctor(doctor_name: str, appointment_date: str, appointment_time: str, duration_minutes: int = 30) -> str:
     """Find an alternative available doctor when the requested doctor is unavailable."""
@@ -49,6 +53,8 @@ async def find_alternative_doctor(doctor_name: str, appointment_date: str, appoi
     if alternative:
         return f"{alternative} is available on {appointment_date} at {appointment_time} for {duration_minutes} minutes."
     return "No alternative doctors are available at that time."
+
+
 
 @tool
 async def list_available_doctors(appointment_date: str, appointment_time: str, duration_minutes: int = 30) -> str:
@@ -63,6 +69,8 @@ async def list_available_doctors(appointment_date: str, appointment_time: str, d
         return f"Available doctors on {appointment_date} at {appointment_time}: {', '.join(available)}."
     return f"No doctors are available on {appointment_date} at {appointment_time}."
 
+
+
 @tool
 async def get_doctor_schedule(doctor_name: str) -> str:
     """Get a doctor's general working days and hours when no specific date/time is given."""
@@ -73,6 +81,8 @@ async def get_doctor_schedule(doctor_name: str) -> str:
         f"{schedule['name']} is available on {schedule['available_days']} "
         f"from {schedule['start_time']} to {schedule['end_time']}."
     )
+
+
 
 @tool
 async def recommend_doctors(reason_for_visit: str, appointment_date: str = None, appointment_time: str = None, duration_minutes: int = 30) -> str:

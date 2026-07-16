@@ -1,23 +1,4 @@
-"""
-Forward pass: run agents.supervisor's structured-output LLM call against a
-labeled dataset split, under a given candidate skill text, and return
-(predicted, expected, input_context) tuples ready for verifier.score_batch.
 
-Deliberately calls agents.supervisor.structured_llm directly instead of going
-through supervisor_node(). supervisor_node() has two things training doesn't
-want: the fast-path regex shortcuts (deterministic code, not skill text — a
-skill patch can never change their behavior, so routing dataset items through
-them would just test the regexes, not the skill) and side effects like DB
-writes. Rollouts must be pure: same input + same skill text -> same call,
-nothing else touched.
-
-STATIC_INSTRUCTIONS is swapped for the candidate skill text for the duration
-of the batch via a monkeypatch, then restored — this file never writes to
-disk, that's skill_store's job. Batches run sequentially against the module
-via a lock so concurrent rollouts against different candidate texts (e.g. an
-epoch refactor running while a training step is also in flight) can't clobber
-each other's STATIC_INSTRUCTIONS value mid-call.
-"""
 
 from __future__ import annotations
 
@@ -38,10 +19,10 @@ _MAX_CONCURRENCY = 8  # bounds simultaneous OpenAI calls per batch
 @dataclass
 class DatasetItem:
     user_message: str
-    prev_state: dict          # e.g. {"intent": None, "doctor_name": "Dr Lee", ...}
-    expected_output: dict      # fields matching SupervisorOutput
-    today: str | None = None   # YYYY-MM-DD, defaults to today if absent
-    history: list[dict] | None = None  # [{"role": "user"|"assistant", "content": str}, ...]
+    prev_state: dict         
+    expected_output: dict      
+    today: str | None = None   
+    history: list[dict] | None = None  
 
 
 def load_dataset(path: str) -> list[DatasetItem]:

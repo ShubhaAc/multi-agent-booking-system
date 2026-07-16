@@ -298,17 +298,7 @@ async def find_alternative_doctor(
     duration_minutes: int = 30,
     candidate_names: list[str] = None,
 ) -> str | None:
-    """
-    Find a free doctor at the given slot, excluding `exclude_doctor`.
-    If `candidate_names` is provided, ONLY those doctors are considered — this
-    should be the same specialization-matched candidate list already used to
-    make the original recommendation (see booking_agent._get_doctors_for_reason),
-    so the alternative offered is guaranteed to be clinically appropriate rather
-    than "any doctor who happens to be free" (which previously surfaced e.g. a
-    Paediatric Dentist as an "alternative" for an adult general visit).
-    If `candidate_names` is None, falls back to searching all doctors (used for
-    reschedule flows where the original reason/specialization isn't known).
-    """
+
     async with aiosqlite.connect(DB_PATH) as db:
         resolved_exclude = await _resolve_doctor_name(db, exclude_doctor)
         exclude_value = resolved_exclude or exclude_doctor
@@ -362,16 +352,7 @@ async def get_doctor_schedule(doctor_name: str) -> dict | None:
 
 
 async def get_doctor_specialization(doctor_name: str) -> str | None:
-    """
-    Look up a doctor's specialization directly, so callers that only have a
-    doctor name (e.g. an in-progress reschedule where the patient never
-    restated their reason for visit) can still build a same-specialty
-    candidate list instead of silently falling back to "search every doctor",
-    which is what caused alternative-doctor suggestions to skip the
-    explanatory messaging (see get_doctor_day_info / _explain_unavailable_
-    with_specialist in scheduling_agent.py — both require a non-empty
-    candidate_names list to run).
-    """
+   
     async with aiosqlite.connect(DB_PATH) as db:
         resolved_name = await _resolve_doctor_name(db, doctor_name)
         if not resolved_name:
@@ -408,14 +389,7 @@ async def get_doctors_by_specialization(specializations: list[str]) -> list[dict
 
 
 async def get_doctor_day_info(doctor_name: str, appointment_date: str) -> dict | None:
-    """
-    Full picture of a doctor's given day: whether they work that weekday,
-    their working hours, and their existing active bookings on that date.
-    Used to explain WHY a doctor isn't free (outside hours vs. already
-    booked) instead of a bare "not available" — e.g. "she works
-    10:00-18:00, and 09:00 is before she opens" or "she's already booked
-    at 14:00-14:30 that day".
-    """
+    
     async with aiosqlite.connect(DB_PATH) as db:
         resolved_name = await _resolve_doctor_name(db, doctor_name)
         if not resolved_name:

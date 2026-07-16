@@ -84,14 +84,13 @@ async def run_training(skill_id: str, steps: int, edit_budget: int) -> None:
 
 
 async def run_epoch(skill_id: str) -> None:
-    # Deferred to skillopt/epoch_refactor.py — imported lazily so `train` and
-    # `rollback` don't require that module to exist yet during early setup.
+    
     from skillopt.epoch_refactor import run_epoch_refactor
     await run_epoch_refactor(skill_id)
 
 
 async def run_sleep(skill_id: str) -> None:
-    # Deferred to skillopt/sleep.py — same lazy-import reasoning as above.
+
     from skillopt.sleep import run_sleep_cycle
     await run_sleep_cycle(skill_id)
 

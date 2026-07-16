@@ -77,22 +77,9 @@ def _compact_for_history(text: str) -> str:
     return f"{truncated} […]"
 
 def _merge_state(prior: dict, result: dict) -> dict:
-    """
-    Merge graph result over prior Redis state.
-
-    Any key PRESENT in `result` overwrites prior state — including an
-    explicit None. A node returning {"appointment_id": None} means "clear
-    this field", not "no opinion" (see cancellation_agent.py's success
-    path, which explicitly resets appointment_id/intent/suggested_alternative
-    after a completed cancellation).
-
-    Keys OMITTED from `result` are left untouched, which is what gives us
-    carry-forward for free — e.g. booking_agent's early '{"response_message":
-    "..."}' returns don't mention appointment_id at all, so it stays
-    whatever it was in `prior`. That's the entire "sticky" behavior; it
-    falls out of starting from dict(prior) and doesn't need a field list.
-    """
+   
     return {**prior, **result}
+
 
 def test_cancellation_success_clears_appointment_id_in_redis():
     prior = {"appointment_id": 12, "intent": "cancel", "sender_id": "u1"}
@@ -106,7 +93,7 @@ def test_cancellation_success_clears_appointment_id_in_redis():
     merged = _merge_state(prior, result)
     assert merged["appointment_id"] is None
     assert merged["intent"] is None
-    assert merged["sender_id"] == "u1"  # untouched key still carries forward
+    assert merged["sender_id"] == "u1"  
     
 
 
@@ -211,7 +198,6 @@ async def reset_conversation(sender_id: str):
     return {"status": "ok", "message": f"Conversation reset for {sender_id}"}
 
 
-# existing index and re-ingests data/*.md fresh (see rag/*_store.py).
 _VECTOR_STORE_UPSERT = {
     "chroma": upsert_chroma,
     "pinecone": upsert_pinecone,
@@ -235,13 +221,7 @@ class VectorStoreUpdateResponse(BaseModel):
 
 @app.post("/vectorstore/update", response_model=VectorStoreUpdateResponse)
 async def update_vector_store(request: VectorStoreUpdateRequest):
-    """
-    Clear all existing chunks currently in the given backend's index and
-    re-ingest fresh from data/*.md (clear-then-rebuild, not an incremental
-    upsert), then remember this sender's backend choice so their next
-    /chat call uses it. Does not touch conversation history — history
-    lives in Redis, entirely independent of the vector store backend.
-    """
+  
     upsert_fn = _VECTOR_STORE_UPSERT.get(request.vector_store)
     if upsert_fn is None:
         raise HTTPException(
@@ -249,8 +229,6 @@ async def update_vector_store(request: VectorStoreUpdateRequest):
             detail=f"Unknown vector_store '{request.vector_store}'. Choose one of: {', '.join(_VECTOR_STORE_UPSERT)}.",
         )
 
-    # Embedding + index calls are blocking network/CPU work — run off the
-    # event loop so this doesn't stall other in-flight /chat requests.
     logger.info("Clearing and rebuilding %s index for sender %s...", request.vector_store, request.sender_id)
     await run_in_threadpool(upsert_fn)
 

@@ -38,11 +38,7 @@ def _to_hhmm(minutes: int) -> str:
 def _compute_open_slots(
     start_time: str, end_time: str, duration_minutes: int, bookings: list[dict], step_minutes: int = 30, limit: int = 5,
 ) -> list[str]:
-    """Walk the doctor's working hours in step_minutes increments and return
-    up to `limit` start times that don't overlap any existing booking. This
-    is what actually lets us say "she's free at 09:00, 10:30, 14:00" instead
-    of just listing what's already booked and leaving the patient to do the
-    subtraction themselves."""
+    
     start_mins = _to_minutes(start_time)
     end_mins = _to_minutes(end_time)
     booked_ranges = [(_to_minutes(b["time"]), _to_minutes(b["time"]) + b["duration"]) for b in bookings]
@@ -65,16 +61,7 @@ async def _explain_unavailable_with_specialist(
     duration_minutes: int,
     candidate_names: list[str] | None,
 ) -> str | None:
-    """
-    When no same-specialty doctor is free at the EXACT requested slot, check
-    EVERY same-specialty candidate who works that weekday (not just the
-    first one found — that was the bug: a single `return` inside the loop
-    meant a second or third available doctor never got surfaced) and, for
-    each, list their actual open time slots that day so the patient has
-    concrete options instead of a vague "try again".
-    Returns a ready-to-use sentence, or None if no same-specialty doctor
-    works that weekday at all.
-    """
+  
     if not candidate_names:
         return None
 
@@ -102,17 +89,7 @@ async def _explain_unavailable_with_specialist(
 
 
 def _primary_specialization_keyword(full_specialization: str) -> str | None:
-    """
-    doctors DB specialization values aren't uniformly worded, e.g. Dr. Sharma
-    is "General & Preventive Dentistry" while Dr. Patel is plain "General
-    Dentistry" — no shared comma/"&" delimiter to split on for the latter.
-    get_doctors_by_specialization matches with `LIKE '%keyword%'`, so the
-    keyword needs to be the ONE token that's actually common across
-    differently-worded entries for the same specialty. That's always the
-    first word ("General" in both cases above) — taking more than that
-    (e.g. Patel's whole "General Dentistry") stops matching Sharma's string
-    since the "&" breaks up "General Dentistry" as a contiguous substring.
-    """
+    
     if not full_specialization:
         return None
     words = full_specialization.strip().split()
@@ -120,18 +97,7 @@ def _primary_specialization_keyword(full_specialization: str) -> str | None:
 
 
 async def _resolve_specialization(state: GraphState, fallback_doctor_name: str | None) -> str | None:
-    """
-    Get the specialization to filter alternative-doctor candidates by.
-    Prefers state.specialization_needed (set when the patient stated a reason
-    for visit this conversation). Falls back to looking up the specialization
-    of `fallback_doctor_name` — normally the doctor already on the existing
-    appointment — since reschedule turns frequently never restate a reason
-    for visit at all. Without this fallback, specialization_needed stays
-    None, candidate_names ends up empty, and BOTH db_find_alternative and
-    _explain_unavailable_with_specialist silently skip same-specialty
-    matching — that's why "another doctor" requests previously produced a
-    bare "no other doctors are free" instead of a specific explanation.
-    """
+   
     if state.specialization_needed:
         return state.specialization_needed
     if fallback_doctor_name:
@@ -162,7 +128,7 @@ _AFFIRMATIVE_PATTERN = re.compile(
 async def scheduling_node(state: GraphState) -> dict:
     logger.info("Scheduling agent started.")
 
-    # ── RESCHEDULE 
+    #  RESCHEDULE 
     if state.intent == "reschedule":
 
         if not state.appointment_id:
@@ -205,19 +171,9 @@ async def scheduling_node(state: GraphState) -> dict:
                     candidate_names = [d["name"] for d in same_specialty]
 
                 pool = candidate_names if candidate_names else await db_get_all_doctors()
-                # "another/different doctor" means switch AWAY from the
-                # current one — it should never be re-offered as the
-                # replacement for itself.
+              
                 pool = [name for name in pool if name != existing_appt["doctor_name"]]
 
-                # Collect EVERY available candidate instead of stopping at
-                # the first match. The old code did `chosen = name; break`
-                # on the first hit, so when two doctors of the same
-                # specialty were both free at the requested slot, the
-                # patient was only ever told about one of them and never
-                # got a real choice — this mirrors the same "who would you
-                # prefer?" pattern already used for fresh bookings in
-                # booking_agent.py.
                 available_candidates = []
                 for name in pool:
                     if await db_check_excluding(

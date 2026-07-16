@@ -22,13 +22,7 @@ def get_chroma_retriever():
 
 
 def upsert_chroma():
-    """
-    Clear ALL existing chunks currently in Chroma, then re-ingest fresh from
-    data/.md. Full clear-then-rebuild — not an incremental upsert — so
-    stale/orphaned chunks from a previous ingest (e.g. a source doc that
-    was deleted, renamed, or re-chunked differently) never linger in the
-    index alongside the new ones.
-    """
+    
     embeddings = OpenAIEmbeddings()
     chunks, ids = load_chunks_with_ids()
     vectorstore = Chroma(persist_directory=CHROMA_PERSIST_DIR, embedding_function=embeddings)
