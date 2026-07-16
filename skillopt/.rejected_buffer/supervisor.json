@@ -1,0 +1,506 @@
+[
+  {
+    "op": "replace",
+    "section_id": "intent",
+    "target_text": "- book: user wants to schedule an appointment for a specific reason, such as a dental issue or procedure, including emergency situations like a knocked-out tooth or severe pain, or a child's dental issue.",
+    "new_text": "- book: user wants to schedule an appointment for a specific reason, such as a dental issue or procedure, including emergency situations like a knocked-out tooth or severe pain, or a child's dental issue; must include a specific date or time for the appointment.",
+    "reason": "candidate scored 0.8812 <= baseline 0.8847 \u2014 not strictly better",
+    "rejected_at": "2026-07-13T11:34:04.838328+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "other_fields",
+    "target_text": "- patient_name: extract ONLY if stated in the CURRENT message; if not present, leave null. If the user refers to a family member, include the relationship, e.g., 'my son' should be extracted as 'son'.",
+    "new_text": "- patient_name: extract ONLY if stated in the CURRENT message; if not present, leave null. If the user refers to a family member, include the relationship, e.g., 'my son' should be extracted as 'son'; must clarify if the patient is a child or adult based on context.",
+    "reason": "candidate scored 0.8812 <= baseline 0.8847 \u2014 not strictly better",
+    "rejected_at": "2026-07-13T11:34:04.838328+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "date_time",
+    "target_text": "- relative_date_phrase: extract phrases like 'monday', 'friday', or 'next wednesday' to determine appointment timing; also recognize time slots like 'morning' or 'afternoon'; includes urgent requests like 'as soon as possible' or 'today'.",
+    "new_text": "- relative_date_phrase: extract phrases like 'monday', 'friday', or 'next wednesday' to determine appointment timing; also recognize time slots like 'morning' or 'afternoon'; includes urgent requests like 'as soon as possible' or 'today'; must ensure a specific date is provided for booking.",
+    "reason": "candidate scored 0.8812 <= baseline 0.8847 \u2014 not strictly better",
+    "rejected_at": "2026-07-13T11:34:04.838328+00:00"
+  },
+  {
+    "op": "add",
+    "section_id": "other_fields",
+    "target_text": null,
+    "new_text": "- appointment_date: extract the date for the appointment if explicitly stated; if not present, prompt the user for a specific date.",
+    "reason": "candidate scored 0.8812 <= baseline 0.8847 \u2014 not strictly better",
+    "rejected_at": "2026-07-13T11:34:04.838328+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "reason_for_visit",
+    "target_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'.",
+    "new_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'; must match expected formats to avoid ambiguity.",
+    "reason": "apply_error: all patches failed to apply",
+    "rejected_at": "2026-07-13T11:49:39.645084+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "relative_date_phrase",
+    "target_text": "- relative_date_phrase: extract phrases like 'monday', 'friday', or 'next wednesday' to determine appointment timing; also recognize time slots like 'morning' or 'afternoon'; includes urgent requests like 'as soon as possible' or 'today'.",
+    "new_text": "- relative_date_phrase: extract phrases like 'monday', 'friday', or 'next wednesday' to determine appointment timing; also recognize time slots like 'morning' or 'afternoon'; includes urgent requests like 'as soon as possible' or 'today'; must ensure a specific date is provided for booking.",
+    "reason": "apply_error: all patches failed to apply",
+    "rejected_at": "2026-07-13T11:49:39.645084+00:00"
+  },
+  {
+    "op": "add",
+    "section_id": "other_fields",
+    "target_text": null,
+    "new_text": "- appointment_date: extract the date for the appointment if explicitly stated; if not present, prompt the user for a specific date.",
+    "reason": "candidate scored 0.8771 <= baseline 0.8865 \u2014 not strictly better",
+    "rejected_at": "2026-07-13T11:55:27.746831+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "reason_for_visit",
+    "target_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'.",
+    "new_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'; must match expected formats to avoid ambiguity.",
+    "reason": "candidate scored 0.8771 <= baseline 0.8865 \u2014 not strictly better",
+    "rejected_at": "2026-07-13T11:55:27.746831+00:00"
+  },
+  {
+    "op": "add",
+    "section_id": "other_fields",
+    "target_text": null,
+    "new_text": "- patient_name: extract ONLY if stated in the CURRENT message; if not present, leave null. If the user refers to a family member, include the relationship, e.g., 'my son' should be extracted as 'son'; must clarify if the patient is a child or adult based on context.",
+    "reason": "candidate scored 0.8771 <= baseline 0.8865 \u2014 not strictly better",
+    "rejected_at": "2026-07-13T11:55:27.746831+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "date_time",
+    "target_text": "- relative_date_phrase: extract phrases like 'monday', 'friday', or 'next wednesday' to determine appointment timing; also recognize time slots like 'morning' or 'afternoon'; includes urgent requests like 'as soon as possible' or 'today'.",
+    "new_text": "- relative_date_phrase: extract phrases like 'monday', 'friday', or 'next wednesday' to determine appointment timing; also recognize time slots like 'morning' or 'afternoon'; includes urgent requests like 'as soon as possible' or 'today'; must ensure a specific date is provided for booking.",
+    "reason": "candidate scored 0.8771 <= baseline 0.8865 \u2014 not strictly better",
+    "rejected_at": "2026-07-13T11:55:27.746831+00:00"
+  },
+  {
+    "op": "add",
+    "section_id": "other_fields",
+    "target_text": null,
+    "new_text": "- patient_name: extract ONLY if stated in the CURRENT message; if not present, leave null. If the user refers to a family member, include the relationship, e.g., 'my son' should be extracted as 'son'; must clarify if the patient is a child or adult based on context.",
+    "reason": "candidate scored 0.8897 (passes=[0.8847058823529412, 0.8947058823529411]) did not clear baseline 0.8847 (passes=[0.8841176470588236, 0.8852941176470588]) + margin 0.01",
+    "rejected_at": "2026-07-14T04:28:31.053444+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "reason_for_visit",
+    "target_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'.",
+    "new_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'; must match expected formats to avoid ambiguity.",
+    "reason": "candidate scored 0.8897 (passes=[0.8847058823529412, 0.8947058823529411]) did not clear baseline 0.8847 (passes=[0.8841176470588236, 0.8852941176470588]) + margin 0.01",
+    "rejected_at": "2026-07-14T04:28:31.053444+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "intent",
+    "target_text": "- intent: user wants to schedule an appointment for a specific reason, such as a dental issue or procedure, including emergency situations like a knocked-out tooth or severe pain, or a child's dental issue.",
+    "new_text": "- intent: user wants to schedule an appointment for a specific reason, such as a dental issue or procedure, including emergency situations like a knocked-out tooth or severe pain, or a child's dental issue; must include a specific date or time for the appointment.",
+    "reason": "candidate scored 0.8897 (passes=[0.8847058823529412, 0.8947058823529411]) did not clear baseline 0.8847 (passes=[0.8841176470588236, 0.8852941176470588]) + margin 0.01",
+    "rejected_at": "2026-07-14T04:28:31.053444+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "doctor_name",
+    "target_text": "- Set doctor_name from the current message or carry forward from Previous State if not mentioned. Ensure the full name is used, e.g., 'Dr. Samuel Okafor'. If the name is partially provided, clarify the full name.",
+    "new_text": "- Set doctor_name from the current message or carry forward from Previous State if not mentioned. Ensure the full name is used, e.g., 'Dr. Samuel Okafor'. If the name is partially provided, clarify the full name; must not infer doctor_name from history or the assistant's prior message.",
+    "reason": "candidate scored 0.8897 (passes=[0.8847058823529412, 0.8947058823529411]) did not clear baseline 0.8847 (passes=[0.8841176470588236, 0.8852941176470588]) + margin 0.01",
+    "rejected_at": "2026-07-14T04:28:31.053444+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "other_fields",
+    "target_text": "- patient_name: extract ONLY if stated in the CURRENT message; if not present, leave null. If the user refers to a family member, include the relationship, e.g., 'my son' should be extracted as 'son'.",
+    "new_text": "- patient_name: extract ONLY if stated in the CURRENT message; if not present, leave null. If the user refers to a family member, include the relationship, e.g., 'my son' should be extracted as 'son'; must clarify if the patient is a child or adult based on context.",
+    "reason": "candidate scored 0.9403 (passes=[0.9391176470588236, 0.9414705882352942]) did not clear baseline 0.9424 (passes=[0.9423529411764705, 0.9423529411764705]) + margin 0.01",
+    "rejected_at": "2026-07-15T04:35:59.175151+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "reason_for_visit",
+    "target_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'.",
+    "new_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'; must match expected formats to avoid ambiguity.",
+    "reason": "candidate scored 0.9403 (passes=[0.9391176470588236, 0.9414705882352942]) did not clear baseline 0.9424 (passes=[0.9423529411764705, 0.9423529411764705]) + margin 0.01",
+    "rejected_at": "2026-07-15T04:35:59.175151+00:00"
+  },
+  {
+    "op": "add",
+    "section_id": "date_time",
+    "target_text": null,
+    "new_text": "- appointment_date: extract the date for the appointment if explicitly stated; if not present, prompt the user for a specific date.",
+    "reason": "candidate scored 0.9403 (passes=[0.9391176470588236, 0.9414705882352942]) did not clear baseline 0.9424 (passes=[0.9423529411764705, 0.9423529411764705]) + margin 0.01",
+    "rejected_at": "2026-07-15T04:35:59.175151+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "intent",
+    "target_text": "- book: user wants to schedule an appointment for a specific reason, such as a dental issue or procedure, including emergency situations like a knocked-out tooth or severe pain, or a child's dental issue.",
+    "new_text": "- book: user wants to schedule an appointment for a specific reason, such as a dental issue or procedure, including emergency situations like a knocked-out tooth or severe pain, or a child's dental issue; must include a specific date or time for the appointment.",
+    "reason": "candidate scored 0.9403 (passes=[0.9391176470588236, 0.9414705882352942]) did not clear baseline 0.9424 (passes=[0.9423529411764705, 0.9423529411764705]) + margin 0.01",
+    "rejected_at": "2026-07-15T04:35:59.175151+00:00"
+  },
+  {
+    "op": "add",
+    "section_id": "other_fields",
+    "target_text": null,
+    "new_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'.",
+    "reason": "apply_error: all patches failed to apply: [add 'other_fields'] add: section 'other_fields' already has a 'reason_for_visit' bullet \u2014 use 'replace' to edit it instead of adding a duplicate; [add 'other_fields'] add: section 'other_fields' already has a 'patient_name' bullet \u2014 use 'replace' to edit it instead of adding a duplicate; [add 'date_time'] add: section 'date_time' already has a 'appointment_date' bullet \u2014 use 'replace' to edit it instead of adding a duplicate",
+    "rejected_at": "2026-07-15T04:36:36.059930+00:00"
+  },
+  {
+    "op": "add",
+    "section_id": "other_fields",
+    "target_text": null,
+    "new_text": "- patient_name: extract ONLY if stated in the CURRENT message; if not present, leave null. If the user refers to a family member, include the relationship, e.g., 'my son' should be extracted as 'son'.",
+    "reason": "apply_error: all patches failed to apply: [add 'other_fields'] add: section 'other_fields' already has a 'reason_for_visit' bullet \u2014 use 'replace' to edit it instead of adding a duplicate; [add 'other_fields'] add: section 'other_fields' already has a 'patient_name' bullet \u2014 use 'replace' to edit it instead of adding a duplicate; [add 'date_time'] add: section 'date_time' already has a 'appointment_date' bullet \u2014 use 'replace' to edit it instead of adding a duplicate",
+    "rejected_at": "2026-07-15T04:36:36.059930+00:00"
+  },
+  {
+    "op": "add",
+    "section_id": "date_time",
+    "target_text": null,
+    "new_text": "- appointment_date: extract the date for the appointment if explicitly stated; if not present, prompt the user for a specific date.",
+    "reason": "apply_error: all patches failed to apply: [add 'other_fields'] add: section 'other_fields' already has a 'reason_for_visit' bullet \u2014 use 'replace' to edit it instead of adding a duplicate; [add 'other_fields'] add: section 'other_fields' already has a 'patient_name' bullet \u2014 use 'replace' to edit it instead of adding a duplicate; [add 'date_time'] add: section 'date_time' already has a 'appointment_date' bullet \u2014 use 'replace' to edit it instead of adding a duplicate",
+    "rejected_at": "2026-07-15T04:36:36.059930+00:00"
+  },
+  {
+    "op": "add",
+    "section_id": "date_time",
+    "target_text": null,
+    "new_text": "- appointment_date: extract the date for the appointment if explicitly stated; if not present, prompt the user for a specific date.",
+    "reason": "candidate scored 0.9397 (passes=[0.9397058823529412, 0.9397058823529412]) did not clear baseline 0.9418 (passes=[0.9411764705882353, 0.9423529411764705]) + margin 0.01",
+    "rejected_at": "2026-07-15T04:38:35.557488+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "reason_for_visit",
+    "target_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'.",
+    "new_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'; must match expected formats to avoid ambiguity.",
+    "reason": "candidate scored 0.9397 (passes=[0.9397058823529412, 0.9397058823529412]) did not clear baseline 0.9418 (passes=[0.9411764705882353, 0.9423529411764705]) + margin 0.01",
+    "rejected_at": "2026-07-15T04:38:35.557488+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "specialization",
+    "target_text": "- specialization_needed: inferred from reason_for_visit if possible.",
+    "new_text": "- specialization_needed: inferred from reason_for_visit, e.g., 'Paediatric' for child checkups, 'Prosthodontics' for crowns, 'Oral Surgery' for bone grafts, 'Implantology' for dental implants, 'Emergency Dentistry' for urgent cases like a knocked-out tooth; must match expected formats to avoid ambiguity.",
+    "reason": "candidate scored 0.9397 (passes=[0.9397058823529412, 0.9397058823529412]) did not clear baseline 0.9418 (passes=[0.9411764705882353, 0.9423529411764705]) + margin 0.01",
+    "rejected_at": "2026-07-15T04:38:35.557488+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "intent",
+    "target_text": "- book: user wants to schedule an appointment for a specific reason, such as a dental issue or procedure, including emergency situations like a knocked-out tooth or severe pain, or a child's dental issue.",
+    "new_text": "- book: user wants to schedule an appointment for a specific reason, such as a dental issue or procedure, including emergency situations like a knocked-out tooth or severe pain, or a child's dental issue; must include a specific date or time for the appointment.",
+    "reason": "candidate scored 0.9397 (passes=[0.9397058823529412, 0.9397058823529412]) did not clear baseline 0.9418 (passes=[0.9411764705882353, 0.9423529411764705]) + margin 0.01",
+    "rejected_at": "2026-07-15T04:38:35.557488+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "other_fields",
+    "target_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'.",
+    "new_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'; must match expected formats to avoid ambiguity.",
+    "reason": "candidate scored 0.9421 (passes=[0.941764705882353, 0.9423529411764705]) did not clear baseline 0.9426 (passes=[0.9423529411764705, 0.9429411764705883]) + margin 0.01",
+    "rejected_at": "2026-07-15T04:40:38.327704+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "other_fields",
+    "target_text": "- patient_name: extract ONLY if stated in the CURRENT message; if not present, leave null. If the user refers to a family member, include the relationship, e.g., 'my son' should be extracted as 'son'.",
+    "new_text": "- patient_name: extract ONLY if stated in the CURRENT message; if not present, leave null. If the user refers to a family member, include the relationship, e.g., 'my son' should be extracted as 'son'; must clarify if the patient is a child or adult based on context.",
+    "reason": "candidate scored 0.9421 (passes=[0.941764705882353, 0.9423529411764705]) did not clear baseline 0.9426 (passes=[0.9423529411764705, 0.9429411764705883]) + margin 0.01",
+    "rejected_at": "2026-07-15T04:40:38.327704+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "date_time",
+    "target_text": "- appointment_date: leave null unless the user states a new explicit calendar date THIS turn, e.g. 'July 20th', 'the 15th', '2026-08-03'.",
+    "new_text": "- appointment_date: extract the date for the appointment if explicitly stated; if not present, prompt the user for a specific date.",
+    "reason": "candidate scored 0.9421 (passes=[0.941764705882353, 0.9423529411764705]) did not clear baseline 0.9426 (passes=[0.9423529411764705, 0.9429411764705883]) + margin 0.01",
+    "rejected_at": "2026-07-15T04:40:38.327704+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "date_time",
+    "target_text": "- relative_date_phrase: extract ONLY a concrete day-level reference that maps to an identifiable calendar day e.g. 'tomorrow', 'monday', 'next friday', 'next week', 'in two weeks', 'today'.",
+    "new_text": "- relative_date_phrase: extract phrases like 'monday', 'friday', or 'next wednesday' to determine appointment timing; also recognize time slots like 'morning' or 'afternoon'; includes urgent requests like 'as soon as possible' or 'today'; must ensure a specific date is provided for booking.",
+    "reason": "candidate scored 0.9421 (passes=[0.941764705882353, 0.9423529411764705]) did not clear baseline 0.9426 (passes=[0.9423529411764705, 0.9429411764705883]) + margin 0.01",
+    "rejected_at": "2026-07-15T04:40:38.327704+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "intent",
+    "target_text": "- book: user wants to schedule an appointment for a specific reason, such as a dental issue or procedure, including emergency situations like a knocked-out tooth or severe pain, or a child's dental issue.",
+    "new_text": "- book: user wants to schedule an appointment for a specific reason, such as a dental issue or procedure, including emergency situations like a knocked-out tooth or severe pain, or a child's dental issue; must include a specific date or time for the appointment.",
+    "reason": "candidate scored 0.9409 (passes=[0.9405882352941177, 0.9411764705882353]) did not clear baseline 0.9419 (passes=[0.943529411764706, 0.9402941176470588]) + margin 0.01",
+    "rejected_at": "2026-07-15T04:42:32.927831+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "reason_for_visit",
+    "target_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'.",
+    "new_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'; must match expected formats to avoid ambiguity.",
+    "reason": "candidate scored 0.9409 (passes=[0.9405882352941177, 0.9411764705882353]) did not clear baseline 0.9419 (passes=[0.943529411764706, 0.9402941176470588]) + margin 0.01",
+    "rejected_at": "2026-07-15T04:42:32.927831+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "date_time",
+    "target_text": "- relative_date_phrase: extract ONLY a concrete day-level reference that maps to an identifiable calendar day e.g. 'tomorrow', 'monday', 'next friday', 'next week', 'in two weeks', 'today'.",
+    "new_text": "- relative_date_phrase: extract phrases like 'monday', 'friday', or 'next wednesday' to determine appointment timing; also recognize time slots like 'morning' or 'afternoon'; includes urgent requests like 'as soon as possible' or 'today'; must ensure a specific date is provided for booking.",
+    "reason": "candidate scored 0.9409 (passes=[0.9405882352941177, 0.9411764705882353]) did not clear baseline 0.9419 (passes=[0.943529411764706, 0.9402941176470588]) + margin 0.01",
+    "rejected_at": "2026-07-15T04:42:32.927831+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "reason_for_visit",
+    "target_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'.",
+    "new_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'; must match expected formats to avoid ambiguity.",
+    "reason": "candidate scored 0.9403 (passes=[0.9400000000000001, 0.9405882352941177]) did not clear baseline 0.9416 (passes=[0.9423529411764705, 0.9408823529411764]) + margin 0.005",
+    "rejected_at": "2026-07-15T04:49:28.245035+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "date_time",
+    "target_text": "- appointment_date: leave null unless the user states a new explicit calendar date THIS turn, e.g. 'July 20th', 'the 15th', '2026-08-03'.",
+    "new_text": "- appointment_date: extract the date for the appointment if explicitly stated; if not present, prompt the user for a specific date.",
+    "reason": "candidate scored 0.9403 (passes=[0.9400000000000001, 0.9405882352941177]) did not clear baseline 0.9416 (passes=[0.9423529411764705, 0.9408823529411764]) + margin 0.005",
+    "rejected_at": "2026-07-15T04:49:28.245035+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "date_time",
+    "target_text": "- relative_date_phrase: extract ONLY a concrete day-level reference that maps to an identifiable calendar day e.g. 'tomorrow', 'monday', 'next friday', 'next week', 'in two weeks', 'today'.",
+    "new_text": "- relative_date_phrase: extract phrases like 'monday', 'friday', or 'next wednesday' to determine appointment timing; also recognize time slots like 'morning' or 'afternoon'; includes urgent requests like 'as soon as possible' or 'today'; must ensure a specific date is provided for booking.",
+    "reason": "candidate scored 0.9403 (passes=[0.9400000000000001, 0.9405882352941177]) did not clear baseline 0.9416 (passes=[0.9423529411764705, 0.9408823529411764]) + margin 0.005",
+    "rejected_at": "2026-07-15T04:49:28.245035+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "reason_for_visit",
+    "target_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'.",
+    "new_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'; must match expected formats to avoid ambiguity.",
+    "reason": "candidate scored 0.9431 (passes=[0.9426470588235294, 0.943529411764706]) did not clear baseline 0.9401 (passes=[0.9423529411764705, 0.9379411764705882]) + margin 0.005",
+    "rejected_at": "2026-07-15T04:51:37.543628+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "date_time",
+    "target_text": "- appointment_date: leave null unless the user states a new explicit calendar date THIS turn, e.g. 'July 20th', 'the 15th', '2026-08-03'.",
+    "new_text": "- appointment_date: extract the date for the appointment if explicitly stated; if not present, prompt the user for a specific date.",
+    "reason": "candidate scored 0.9431 (passes=[0.9426470588235294, 0.943529411764706]) did not clear baseline 0.9401 (passes=[0.9423529411764705, 0.9379411764705882]) + margin 0.005",
+    "rejected_at": "2026-07-15T04:51:37.543628+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "date_time",
+    "target_text": "- relative_date_phrase: extract ONLY a concrete day-level reference that maps to an identifiable calendar day e.g. 'tomorrow', 'monday', 'next friday', 'next week', 'in two weeks', 'today'.",
+    "new_text": "- relative_date_phrase: extract phrases like 'monday', 'friday', or 'next wednesday' to determine appointment timing; also recognize time slots like 'morning' or 'afternoon'; includes urgent requests like 'as soon as possible' or 'today'; must ensure a specific date is provided for booking.",
+    "reason": "candidate scored 0.9431 (passes=[0.9426470588235294, 0.943529411764706]) did not clear baseline 0.9401 (passes=[0.9423529411764705, 0.9379411764705882]) + margin 0.005",
+    "rejected_at": "2026-07-15T04:51:37.543628+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "other_fields",
+    "target_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'.",
+    "new_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'; must match expected formats to avoid ambiguity.",
+    "reason": "candidate scored 0.9396 (passes=[0.938529411764706, 0.9405882352941177]) did not clear baseline 0.9407 (passes=[0.941764705882353, 0.9397058823529412]) + margin 0.005",
+    "rejected_at": "2026-07-15T04:53:46.565898+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "other_fields",
+    "target_text": "- patient_name: extract ONLY if stated in the CURRENT message; if not present, leave null. If the user refers to a family member, include the relationship, e.g., 'my son' should be extracted as 'son'.",
+    "new_text": "- patient_name: extract ONLY if stated in the CURRENT message; if not present, leave null. If the user refers to a family member, include the relationship, e.g., 'my son' should be extracted as 'son'; must clarify if the patient is a child or adult based on context.",
+    "reason": "candidate scored 0.9396 (passes=[0.938529411764706, 0.9405882352941177]) did not clear baseline 0.9407 (passes=[0.941764705882353, 0.9397058823529412]) + margin 0.005",
+    "rejected_at": "2026-07-15T04:53:46.565898+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "date_time",
+    "target_text": "- appointment_date: leave null unless the user states a new explicit calendar date THIS turn, e.g. 'July 20th', 'the 15th', '2026-08-03'.",
+    "new_text": "- appointment_date: extract the date for the appointment if explicitly stated; if not present, prompt the user for a specific date.",
+    "reason": "candidate scored 0.9396 (passes=[0.938529411764706, 0.9405882352941177]) did not clear baseline 0.9407 (passes=[0.941764705882353, 0.9397058823529412]) + margin 0.005",
+    "rejected_at": "2026-07-15T04:53:46.565898+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "reason_for_visit",
+    "target_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'.",
+    "new_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'; must match expected formats to avoid ambiguity.",
+    "reason": "candidate scored 0.9396 (passes=[0.938529411764706, 0.9405882352941177]) did not clear baseline 0.9407 (passes=[0.941764705882353, 0.9397058823529412]) + margin 0.005",
+    "rejected_at": "2026-07-15T04:53:46.565898+00:00"
+  },
+  {
+    "op": "add",
+    "section_id": "date_time",
+    "target_text": null,
+    "new_text": "- relative_date_phrase: extract ONLY a concrete day-level reference that maps to an identifiable calendar day e.g. 'tomorrow', 'monday', 'next friday', 'next week', 'in two weeks', 'today'; must ensure a specific date is provided for booking.",
+    "reason": "candidate scored 0.9421 (passes=[0.9423529411764705, 0.941764705882353]) did not clear baseline 0.9399 (passes=[0.9408823529411764, 0.9388235294117647]) + margin 0.005",
+    "rejected_at": "2026-07-15T04:55:43.516859+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "reason_for_visit",
+    "target_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'.",
+    "new_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'; must match expected formats to avoid ambiguity.",
+    "reason": "candidate scored 0.9421 (passes=[0.9423529411764705, 0.941764705882353]) did not clear baseline 0.9399 (passes=[0.9408823529411764, 0.9388235294117647]) + margin 0.005",
+    "rejected_at": "2026-07-15T04:55:43.516859+00:00"
+  },
+  {
+    "op": "add",
+    "section_id": "other_fields",
+    "target_text": null,
+    "new_text": "- patient_name: extract ONLY if stated in the CURRENT message; if not present, leave null. If the user refers to a family member, include the relationship, e.g., 'my son' should be extracted as 'son'; must clarify if the patient is a child or adult based on context.",
+    "reason": "candidate scored 0.9421 (passes=[0.9423529411764705, 0.941764705882353]) did not clear baseline 0.9399 (passes=[0.9408823529411764, 0.9388235294117647]) + margin 0.005",
+    "rejected_at": "2026-07-15T04:55:43.516859+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "doctor_name",
+    "target_text": "- Set doctor_name from the current message (resolved via the roster above) or carry forward from Previous State if not mentioned.",
+    "new_text": "- Set doctor_name from the current message (resolved via the roster above) or carry forward from Previous State if not mentioned; must not infer doctor_name from history or the assistant's prior message.",
+    "reason": "candidate scored 0.9421 (passes=[0.9423529411764705, 0.941764705882353]) did not clear baseline 0.9399 (passes=[0.9408823529411764, 0.9388235294117647]) + margin 0.005",
+    "rejected_at": "2026-07-15T04:55:43.516859+00:00"
+  },
+  {
+    "op": "add",
+    "section_id": "date_time",
+    "target_text": null,
+    "new_text": "- appointment_date: extract the date for the appointment if explicitly stated; if not present, prompt the user for a specific date.",
+    "reason": "candidate scored 0.9406 (passes=[0.9414705882352942, 0.9397058823529412]) did not clear baseline 0.9416 (passes=[0.941764705882353, 0.9414705882352942]) + margin 0.005",
+    "rejected_at": "2026-07-15T04:57:39.854264+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "reason_for_visit",
+    "target_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'.",
+    "new_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'; must match expected formats to avoid ambiguity.",
+    "reason": "candidate scored 0.9406 (passes=[0.9414705882352942, 0.9397058823529412]) did not clear baseline 0.9416 (passes=[0.941764705882353, 0.9414705882352942]) + margin 0.005",
+    "rejected_at": "2026-07-15T04:57:39.854264+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "date_time",
+    "target_text": "- relative_date_phrase: extract ONLY a concrete day-level reference that maps to an identifiable calendar day e.g. 'tomorrow', 'monday', 'next friday', 'next week', 'in two weeks', 'today'.",
+    "new_text": "- relative_date_phrase: extract phrases like 'monday', 'friday', or 'next wednesday' to determine appointment timing; also recognize time slots like 'morning' or 'afternoon'; includes urgent requests like 'as soon as possible' or 'today'; must ensure a specific date is provided for booking.",
+    "reason": "candidate scored 0.9406 (passes=[0.9414705882352942, 0.9397058823529412]) did not clear baseline 0.9416 (passes=[0.941764705882353, 0.9414705882352942]) + margin 0.005",
+    "rejected_at": "2026-07-15T04:57:39.854264+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "other_fields",
+    "target_text": "- patient_name: extract ONLY if stated in the CURRENT message; if not present, leave null. If the user refers to a family member, include the relationship, e.g., 'my son' should be extracted as 'son'.",
+    "new_text": "- patient_name: extract ONLY if stated in the CURRENT message; if not present, leave null. If the user refers to a family member, include the relationship, e.g., 'my son' should be extracted as 'son'; must clarify if the patient is a child or adult based on context.",
+    "reason": "candidate scored 0.9406 (passes=[0.9414705882352942, 0.9397058823529412]) did not clear baseline 0.9416 (passes=[0.941764705882353, 0.9414705882352942]) + margin 0.005",
+    "rejected_at": "2026-07-15T04:57:39.854264+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "intent",
+    "target_text": "- book \u2013 user wants to schedule an appointment for a specific reason, including urgent situations like severe pain or a child's dental issue; must include a specific date or time for the appointment.",
+    "new_text": "- book \u2013 user wants to schedule an appointment for a specific reason, including urgent situations like severe pain or a child's dental issue; must include a specific date or time for the appointment; must not be ambiguous or unclear.",
+    "reason": "candidate scored 0.9088 (passes=[0.9073529411764706, 0.9102941176470588]) did not clear baseline 0.9081 (passes=[0.9091176470588236, 0.9070588235294117]) + margin 0.005",
+    "rejected_at": "2026-07-16T05:19:45.427469+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "reason_for_visit",
+    "target_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'.",
+    "new_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'; must match expected formats to avoid ambiguity.",
+    "reason": "candidate scored 0.9088 (passes=[0.9073529411764706, 0.9102941176470588]) did not clear baseline 0.9081 (passes=[0.9091176470588236, 0.9070588235294117]) + margin 0.005",
+    "rejected_at": "2026-07-16T05:19:45.427469+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "date_time",
+    "target_text": "- relative_date_phrase: extract phrases like 'monday', 'friday', or 'next wednesday' to determine appointment timing; also recognize time slots like 'morning' or 'afternoon'; includes urgent requests like 'as soon as possible' or 'today'.",
+    "new_text": "- relative_date_phrase: extract phrases like 'monday', 'friday', or 'next wednesday' to determine appointment timing; also recognize time slots like 'morning' or 'afternoon'; includes urgent requests like 'as soon as possible' or 'today'; must ensure a specific date is provided for booking.",
+    "reason": "candidate scored 0.9088 (passes=[0.9073529411764706, 0.9102941176470588]) did not clear baseline 0.9081 (passes=[0.9091176470588236, 0.9070588235294117]) + margin 0.005",
+    "rejected_at": "2026-07-16T05:19:45.427469+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "reason_for_visit",
+    "target_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'.",
+    "new_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'; must match expected formats to avoid ambiguity.",
+    "reason": "apply_error: all patches failed to apply: [replace 'reason_for_visit'] replace: unknown section_id 'reason_for_visit'; [replace 'doctor_name'] replace: target_text not found (verbatim or whitespace-normalized) in section 'doctor_name' \u2014 either the patch was computed against a stale skill version, or it matched more than one location; [replace 'date_time'] replace: target_text not found (verbatim or whitespace-normalized) in section 'date_time' \u2014 either the patch was computed against a stale skill version, or it matched more than one location",
+    "rejected_at": "2026-07-16T05:20:31.776319+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "doctor_name",
+    "target_text": "- Set doctor_name from the current message or carry forward from Previous State if not mentioned. Ensure the full name is used, e.g., 'Dr. Samuel Okafor'. If the name is partially provided, clarify the full name.",
+    "new_text": "- Set doctor_name from the current message or carry forward from Previous State if not mentioned; must not infer doctor_name from history or the assistant's prior message.",
+    "reason": "apply_error: all patches failed to apply: [replace 'reason_for_visit'] replace: unknown section_id 'reason_for_visit'; [replace 'doctor_name'] replace: target_text not found (verbatim or whitespace-normalized) in section 'doctor_name' \u2014 either the patch was computed against a stale skill version, or it matched more than one location; [replace 'date_time'] replace: target_text not found (verbatim or whitespace-normalized) in section 'date_time' \u2014 either the patch was computed against a stale skill version, or it matched more than one location",
+    "rejected_at": "2026-07-16T05:20:31.776319+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "date_time",
+    "target_text": "- relative_date_phrase: extract phrases like 'monday', 'friday', or 'next wednesday' to determine appointment timing; also recognize time slots like 'morning' or 'afternoon'; includes urgent requests like 'as soon as possible' or 'today'.",
+    "new_text": "- relative_date_phrase: extract phrases like 'monday', 'friday', or 'next wednesday' to determine appointment timing; also recognize time slots like 'morning' or 'afternoon'; includes urgent requests like 'as soon as possible' or 'today'; must ensure a specific date is provided for booking.",
+    "reason": "apply_error: all patches failed to apply: [replace 'reason_for_visit'] replace: unknown section_id 'reason_for_visit'; [replace 'doctor_name'] replace: target_text not found (verbatim or whitespace-normalized) in section 'doctor_name' \u2014 either the patch was computed against a stale skill version, or it matched more than one location; [replace 'date_time'] replace: target_text not found (verbatim or whitespace-normalized) in section 'date_time' \u2014 either the patch was computed against a stale skill version, or it matched more than one location",
+    "rejected_at": "2026-07-16T05:20:31.776319+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "reason_for_visit",
+    "target_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'.",
+    "new_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'; must match expected formats to avoid ambiguity.",
+    "reason": "apply_error: all patches failed to apply: [replace 'reason_for_visit'] replace: unknown section_id 'reason_for_visit'; [replace 'doctor_name'] replace: target_text not found (verbatim or whitespace-normalized) in section 'doctor_name' \u2014 either the patch was computed against a stale skill version, or it matched more than one location; [replace 'date_time'] replace: target_text not found (verbatim or whitespace-normalized) in section 'date_time' \u2014 either the patch was computed against a stale skill version, or it matched more than one location",
+    "rejected_at": "2026-07-16T05:21:18.639254+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "doctor_name",
+    "target_text": "- Set doctor_name from the current message or carry forward from Previous State if not mentioned. Ensure the full name is used, e.g., 'Dr. Samuel Okafor'. If the name is partially provided, clarify the full name.",
+    "new_text": "- Set doctor_name from the current message or carry forward from Previous State if not mentioned; must not infer doctor_name from history or the assistant's prior message.",
+    "reason": "apply_error: all patches failed to apply: [replace 'reason_for_visit'] replace: unknown section_id 'reason_for_visit'; [replace 'doctor_name'] replace: target_text not found (verbatim or whitespace-normalized) in section 'doctor_name' \u2014 either the patch was computed against a stale skill version, or it matched more than one location; [replace 'date_time'] replace: target_text not found (verbatim or whitespace-normalized) in section 'date_time' \u2014 either the patch was computed against a stale skill version, or it matched more than one location",
+    "rejected_at": "2026-07-16T05:21:18.639254+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "date_time",
+    "target_text": "- relative_date_phrase: extract phrases like 'monday', 'friday', or 'next wednesday' to determine appointment timing; also recognize time slots like 'morning' or 'afternoon'; includes urgent requests like 'as soon as possible' or 'today'.",
+    "new_text": "- relative_date_phrase: extract phrases like 'monday', 'friday', or 'next wednesday' to determine appointment timing; also recognize time slots like 'morning' or 'afternoon'; includes urgent requests like 'as soon as possible' or 'today'; must ensure a specific date is provided for booking.",
+    "reason": "apply_error: all patches failed to apply: [replace 'reason_for_visit'] replace: unknown section_id 'reason_for_visit'; [replace 'doctor_name'] replace: target_text not found (verbatim or whitespace-normalized) in section 'doctor_name' \u2014 either the patch was computed against a stale skill version, or it matched more than one location; [replace 'date_time'] replace: target_text not found (verbatim or whitespace-normalized) in section 'date_time' \u2014 either the patch was computed against a stale skill version, or it matched more than one location",
+    "rejected_at": "2026-07-16T05:21:18.639254+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "intent",
+    "target_text": "- book \u2013 user wants to schedule an appointment for a specific reason, including urgent situations like severe pain or a child's dental issue; must include a specific date or time for the appointment.",
+    "new_text": "- book \u2013 user wants to schedule an appointment for a specific reason, including urgent situations like severe pain or a child's dental issue; must include a specific date or time for the appointment; must not be ambiguous or unclear.",
+    "reason": "candidate scored 0.9082 (passes=[0.9064705882352941, 0.9099999999999999]) did not clear baseline 0.9035 (passes=[0.9032352941176471, 0.9038235294117647]) + margin 0.005",
+    "rejected_at": "2026-07-16T05:23:51.094687+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "reason_for_visit",
+    "target_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'.",
+    "new_text": "- reason_for_visit: extract the reason for the visit from the user's message; must be specific and clear, e.g., 'dental checkup', 'crown for cracked tooth', 'implants for two missing teeth'; must match expected formats to avoid ambiguity.",
+    "reason": "candidate scored 0.9082 (passes=[0.9064705882352941, 0.9099999999999999]) did not clear baseline 0.9035 (passes=[0.9032352941176471, 0.9038235294117647]) + margin 0.005",
+    "rejected_at": "2026-07-16T05:23:51.094687+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "date_time",
+    "target_text": "- relative_date_phrase: extract phrases like 'monday', 'friday', or 'next wednesday' to determine appointment timing; also recognize time slots like 'morning' or 'afternoon'; includes urgent requests like 'as soon as possible' or 'today'.",
+    "new_text": "- relative_date_phrase: extract phrases like 'monday', 'friday', or 'next wednesday' to determine appointment timing; also recognize time slots like 'morning' or 'afternoon'; includes urgent requests like 'as soon as possible' or 'today'; must ensure a specific date is provided for booking.",
+    "reason": "candidate scored 0.9082 (passes=[0.9064705882352941, 0.9099999999999999]) did not clear baseline 0.9035 (passes=[0.9032352941176471, 0.9038235294117647]) + margin 0.005",
+    "rejected_at": "2026-07-16T05:23:51.094687+00:00"
+  },
+  {
+    "op": "replace",
+    "section_id": "specialization",
+    "target_text": "- specialization: inferred from reason_for_visit if possible.",
+    "new_text": "- specialization_needed: inferred from reason_for_visit, e.g., 'Paediatric' for child checkups, 'Prosthodontics' for crowns, 'Oral Surgery' for bone grafts, 'Implantology' for dental implants, 'Emergency Dentistry' for urgent cases like a knocked-out tooth; must match expected formats to avoid ambiguity.",
+    "reason": "candidate scored 0.9082 (passes=[0.9064705882352941, 0.9099999999999999]) did not clear baseline 0.9035 (passes=[0.9032352941176471, 0.9038235294117647]) + margin 0.005",
+    "rejected_at": "2026-07-16T05:23:51.094687+00:00"
+  }
+]

@@ -83,7 +83,7 @@ def get_milvus_retriever():
         connection_args={"uri": MILVUS_URI},
         auto_id=False,
     )
-    return vectorstore.as_retriever(search_kwargs={"k": 4})
+    return vectorstore.as_retriever(search_kwargs={"k": 10})
 
 
 def upsert_milvus():

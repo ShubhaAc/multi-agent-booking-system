@@ -101,6 +101,24 @@ async def _explain_unavailable_with_specialist(
     return " ".join(doctor_summaries) + ". Would any of those work?"
 
 
+def _primary_specialization_keyword(full_specialization: str) -> str | None:
+    """
+    doctors DB specialization values aren't uniformly worded, e.g. Dr. Sharma
+    is "General & Preventive Dentistry" while Dr. Patel is plain "General
+    Dentistry" — no shared comma/"&" delimiter to split on for the latter.
+    get_doctors_by_specialization matches with `LIKE '%keyword%'`, so the
+    keyword needs to be the ONE token that's actually common across
+    differently-worded entries for the same specialty. That's always the
+    first word ("General" in both cases above) — taking more than that
+    (e.g. Patel's whole "General Dentistry") stops matching Sharma's string
+    since the "&" breaks up "General Dentistry" as a contiguous substring.
+    """
+    if not full_specialization:
+        return None
+    words = full_specialization.strip().split()
+    return words[0] if words else None
+
+
 async def _resolve_specialization(state: GraphState, fallback_doctor_name: str | None) -> str | None:
     """
     Get the specialization to filter alternative-doctor candidates by.
@@ -117,7 +135,8 @@ async def _resolve_specialization(state: GraphState, fallback_doctor_name: str |
     if state.specialization_needed:
         return state.specialization_needed
     if fallback_doctor_name:
-        return await db_get_doctor_specialization(fallback_doctor_name)
+        full_spec = await db_get_doctor_specialization(fallback_doctor_name)
+        return _primary_specialization_keyword(full_spec)
     return None
 
 
@@ -178,7 +197,7 @@ async def scheduling_node(state: GraphState) -> dict:
                 or _DOCTOR_CHANGE_SIGNAL_PATTERN.search(state.user_message)
             )
             if wants_different_doctor:
-     
+
                 specialization_needed = await _resolve_specialization(state, existing_appt["doctor_name"])
                 candidate_names = None
                 if specialization_needed:
@@ -186,23 +205,34 @@ async def scheduling_node(state: GraphState) -> dict:
                     candidate_names = [d["name"] for d in same_specialty]
 
                 pool = candidate_names if candidate_names else await db_get_all_doctors()
+                # "another/different doctor" means switch AWAY from the
+                # current one — it should never be re-offered as the
+                # replacement for itself.
+                pool = [name for name in pool if name != existing_appt["doctor_name"]]
 
-                chosen = None
+                # Collect EVERY available candidate instead of stopping at
+                # the first match. The old code did `chosen = name; break`
+                # on the first hit, so when two doctors of the same
+                # specialty were both free at the requested slot, the
+                # patient was only ever told about one of them and never
+                # got a real choice — this mirrors the same "who would you
+                # prefer?" pattern already used for fresh bookings in
+                # booking_agent.py.
+                available_candidates = []
                 for name in pool:
                     if await db_check_excluding(
                         name, state.appointment_date, state.appointment_time,
                         state.duration_minutes, exclude_appointment_id=state.appointment_id,
                     ):
-                        chosen = name
-                        break
+                        available_candidates.append(name)
 
-                if not chosen:
+                if not available_candidates:
                     explanation = await _explain_unavailable_with_specialist(
                         existing_appt["doctor_name"], state.appointment_date, state.appointment_time,
                         state.duration_minutes, candidate_names,
                     )
                     base = (
-                        f"No doctors are free on {state.appointment_date} at {state.appointment_time}."
+                        f"No other doctors are free on {state.appointment_date} at {state.appointment_time}."
                     )
                     return {
                         "appointment_id": state.appointment_id,
@@ -214,6 +244,19 @@ async def scheduling_node(state: GraphState) -> dict:
                         ),
                     }
 
+                if len(available_candidates) > 1:
+                    names_text = ", ".join(available_candidates)
+                    return {
+                        "appointment_id": state.appointment_id,
+                        "appointment_date": state.appointment_date,
+                        "appointment_time": state.appointment_time,
+                        "response_message": (
+                            f"{names_text} are all free on {state.appointment_date} at "
+                            f"{state.appointment_time} — who would you prefer?"
+                        ),
+                    }
+
+                chosen = available_candidates[0]
                 return {
                     "appointment_id": state.appointment_id,
                     "appointment_date": state.appointment_date,
@@ -440,7 +483,7 @@ async def scheduling_node(state: GraphState) -> dict:
                     available.append(doctor)
 
             if available:
-                return {"response_message ": f"The following doctors are available on {state.appointment_date} at {state.appointment_time}: {', '.join(available)}."}
+                return {"response_message": f"The following doctors are available on {state.appointment_date} at {state.appointment_time}: {', '.join(available)}."}
             return {"response_message": f"No doctors are available on {state.appointment_date} at {state.appointment_time} for {state.specialization_needed or 'your reason'}."}
 
         schedule = await db_get_doctor_schedule(state.doctor_name)

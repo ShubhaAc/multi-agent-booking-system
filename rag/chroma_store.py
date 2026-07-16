@@ -18,7 +18,7 @@ def get_chroma_retriever():
         logger.info("Building new Chroma index.")
         chunks = load_documents()
         vectorstore = Chroma.from_documents(chunks, embedding=embeddings, persist_directory=CHROMA_PERSIST_DIR)
-    return vectorstore.as_retriever(search_kwargs={"k": 4})
+    return vectorstore.as_retriever(search_kwargs={"k": 10})
 
 
 def upsert_chroma():

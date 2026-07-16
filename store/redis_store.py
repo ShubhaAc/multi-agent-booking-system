@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 
 _redis = Redis(url=UPSTASH_REDIS_REST_URL, token=UPSTASH_REDIS_REST_TOKEN)
 
+FAQ_INDEX_KEY = "faq:index"
 
 def _key(sender_id: str) -> str:
     return f"conv:{sender_id}"
@@ -27,25 +28,7 @@ async def get_conversation(sender_id: str) -> dict:
 async def save_conversation(sender_id: str, history: list[dict], state: dict) -> None:
     await _redis.set(_key(sender_id), json.dumps({"history": history, "state": state}))
 
-'''
-# FAQ semantic cache — separate namespace from per-conversation state above.
-# A plain exact/normalized-string cache only catches literal repeats of the
-# same phrasing. Real users ask the same underlying question in many
-# different words ("what services do you provide" vs "what are the
-# services" vs "what do you offer"), which never match on string equality.
-# So instead of hashing the question text, we store a small index of
-# {question, answer, embedding} entries and match new questions against it
-# by cosine similarity of their embeddings (computed in agents/knowledge_agent.py,
-# using OpenAI embeddings — a request that costs a small fraction of a cent
-# and nothing close to a full LLM call).
 
-# The whole index lives under one Redis key as a JSON array. For a clinic
-# FAQ (a few dozen to a few hundred distinct questions), this is simpler and
-# cheaper than standing up a real vector DB, and the whole index is small
-# enough to fetch and scan in Python on every knowledge-agent turn.
-# Capped at FAQ_INDEX_MAX_ENTRIES, oldest entries dropped first.
-'''
-FAQ_INDEX_KEY = "faq:index"
 
 
 async def get_faq_index() -> list[dict]:

@@ -33,6 +33,8 @@ async def fallback_node(state: GraphState) -> dict:
 
 def route_intent(state: GraphState) -> str:
     logger.info("Routing intent: %s", state.intent)
+    if state.response_message:
+        return "done"
     if state.intent == "book":
         return "booking"
     elif state.intent == "cancel":
@@ -42,15 +44,12 @@ def route_intent(state: GraphState) -> str:
     elif state.intent == "knowledge":
         return "knowledge"
     elif state.intent is None:
-        # Supervisor already answered directly (fallback_response) — skip the
-        # extra LLM call. Only fall through to fallback_node if it didn't.
         if state.response_message:
             return "done"
         return "fallback"
     else:
         logger.warning("Unknown intent: %s — routing to fallback", state.intent)
         return "fallback"
-
 
 def build_graph():
     graph = StateGraph(GraphState)

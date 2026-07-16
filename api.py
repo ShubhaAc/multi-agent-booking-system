@@ -11,7 +11,7 @@ from state import GraphState
 from store import get_conversation, save_conversation
 from main import opik_tracer
 from fastapi.middleware.cors import CORSMiddleware
-from rag import upsert_chroma, upsert_pinecone, upsert_milvus
+from rag import upsert_chroma, upsert_pinecone
 
 
 logger = logging.getLogger(__name__)
@@ -76,35 +76,38 @@ def _compact_for_history(text: str) -> str:
     truncated = text[:_HISTORY_ASSISTANT_MAX_CHARS].rsplit(" ", 1)[0]
     return f"{truncated} […]"
 
-
-# Fields that should never be overwritten with None when merging result into prior.
-# These are set once and must persist until explicitly cleared by agent logic.
-_STICKY_FIELDS = {
-    "sender_id", "patient_name", "phone_number", "invitee_email",
-    "reason_for_visit", "specialization_needed", "doctor_name",
-    "appointment_date", "appointment_time", "duration_minutes",
-    "appointment_id", "suggested_alternative", "rebook_requested",
-    "intent", "vector_store",
-}
-
-
 def _merge_state(prior: dict, result: dict) -> dict:
     """
     Merge graph result over prior Redis state.
-    For sticky fields: only overwrite if the new value is not None.
-    For non-sticky fields: always take the new value.
-    This ensures fields not returned by a node (e.g. appointment_id
-    when scheduling_node returns an early 'please provide X' message)
-    are preserved in Redis for the next turn.
+
+    Any key PRESENT in `result` overwrites prior state — including an
+    explicit None. A node returning {"appointment_id": None} means "clear
+    this field", not "no opinion" (see cancellation_agent.py's success
+    path, which explicitly resets appointment_id/intent/suggested_alternative
+    after a completed cancellation).
+
+    Keys OMITTED from `result` are left untouched, which is what gives us
+    carry-forward for free — e.g. booking_agent's early '{"response_message":
+    "..."}' returns don't mention appointment_id at all, so it stays
+    whatever it was in `prior`. That's the entire "sticky" behavior; it
+    falls out of starting from dict(prior) and doesn't need a field list.
     """
-    merged = dict(prior)
-    for key, value in result.items():
-        if key in _STICKY_FIELDS:
-            if value is not None:
-                merged[key] = value
-        else:
-            merged[key] = value
-    return merged
+    return {**prior, **result}
+
+def test_cancellation_success_clears_appointment_id_in_redis():
+    prior = {"appointment_id": 12, "intent": "cancel", "sender_id": "u1"}
+    result = {
+        "appointment_id": None,
+        "intent": None,
+        "rebook_requested": False,
+        "cancellation_confirmed": True,
+        "response_message": "Cancelled.",
+    }
+    merged = _merge_state(prior, result)
+    assert merged["appointment_id"] is None
+    assert merged["intent"] is None
+    assert merged["sender_id"] == "u1"  # untouched key still carries forward
+    
 
 
 @asynccontextmanager
@@ -178,6 +181,7 @@ async def chat(request: ChatRequest):
         suggested_alternative=prior.get("suggested_alternative"),
         appointment_id=prior.get("appointment_id"),
         rebook_requested=prior.get("rebook_requested", False),
+        recommended_doctors=prior.get("recommended_doctors", []),
     )
 
     result = await graph.ainvoke(
@@ -211,7 +215,7 @@ async def reset_conversation(sender_id: str):
 _VECTOR_STORE_UPSERT = {
     "chroma": upsert_chroma,
     "pinecone": upsert_pinecone,
-    "milvus": upsert_milvus,
+    #"milvus": upsert_milvus,
 }
 
 

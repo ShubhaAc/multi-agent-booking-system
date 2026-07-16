@@ -14,7 +14,7 @@ def get_pinecone_retriever():
         index_name=PINECONE_INDEX_NAME,
         embedding=embeddings
     )
-    return vectorstore.as_retriever(search_kwargs={"k": 4})
+    return vectorstore.as_retriever(search_kwargs={"k": 10})
 
 
 def upsert_pinecone():

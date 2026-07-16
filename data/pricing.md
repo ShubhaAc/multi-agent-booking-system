@@ -22,6 +22,14 @@
 | Composite Bonding (per tooth) | $250 – $500 |
 | Smile Makeover (full) | $3,000 – $10,000+ |
 
+## Periodontics
+| Treatment | Price Range |
+|-----------|-------------|
+| Scaling & Root Planing (per quadrant) | $150 – $300 |
+| Gum Surgery | $600 – $1,500 |
+| Periodontal Maintenance | $100 – $180 |
+| Gum Grafting (per site) | $600 – $1,200 |
+
 ## Orthodontics
 | Treatment | Price Range |
 |-----------|-------------|
@@ -30,14 +38,29 @@
 | Clear Aligners (Invisalign) | $4,500 – $7,500 |
 | Retainer (per arch) | $200 – $400 |
 
-## Oral Surgery & Implants
+## Oral Surgery
 | Treatment | Price Range |
 |-----------|-------------|
 | Wisdom Tooth Removal (simple) | $200 – $400 |
 | Wisdom Tooth Removal (impacted) | $350 – $700 |
 | Single Dental Implant | $2,500 – $4,500 |
-| All-on-4 Implants (per arch) | $15,000 – $25,000 |
 | Bone Grafting | $500 – $3,000 |
+
+## Implantology
+| Treatment | Price Range |
+|-----------|-------------|
+| All-on-4 Implants (per arch) | $15,000 – $25,000 |
+| Guided Implant Surgery | $500 – $1,200 (in addition to implant cost) |
+| Multiple Implant Placement | Priced per implant, consultation required |
+
+## Diagnostic Imaging & Radiology
+| Treatment | Price Range |
+|-----------|-------------|
+| Digital X-Ray (single) | $30 – $60 |
+| Digital X-Ray (full set) | $100 – $200 |
+| CBCT Scan | $200 – $400 |
+| Diagnostic Consultation | $80 – $150 |
+
 
 ## Paediatric Dentistry
 | Treatment | Price Range |

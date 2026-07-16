@@ -21,5 +21,9 @@ FAQ_CACHE_TTL_SECONDS = int(os.getenv("FAQ_CACHE_TTL_SECONDS", "86400"))  # 24h 
 FAQ_EMBEDDING_MODEL = os.getenv("FAQ_EMBEDDING_MODEL", "text-embedding-3-small")
 FAQ_SIMILARITY_THRESHOLD = float(os.getenv("FAQ_SIMILARITY_THRESHOLD", "0.90"))
 FAQ_INDEX_MAX_ENTRIES = int(os.getenv("FAQ_INDEX_MAX_ENTRIES", "300"))
+FAQ_INDEX_KEY = os.getenv("FAQ_INDEX_KEY", "faq:index")
 MILVUS_URI = os.getenv("MILVUS_URI", "./milvus_local.db")
 MILVUS_COLLECTION_NAME = os.getenv("MILVUS_COLLECTION_NAME", "dental_clinic_docs")
+
+
+

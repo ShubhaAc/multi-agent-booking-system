@@ -9,10 +9,11 @@ from pydantic import BaseModel, Field
 
 from state import GraphState
 from config import MODEL_NAME
+from skillopt.skill_store import load_active_skill
+
 
 logger = logging.getLogger(__name__)
-llm = ChatOpenAI(model=MODEL_NAME, temperature=0)
-
+llm = ChatOpenAI(model=MODEL_NAME, temperature=0, seed=42)
 
 class SupervisorOutput(BaseModel):
     intent: Literal["book", "cancel", "reschedule", "check_availability", "knowledge", None] = Field(
@@ -113,45 +114,9 @@ def _log_llm_usage(response) -> None:
 - DYNAMIC_CONTEXT_TEMPLATE holds everything that changes turn-to-turn (prev
   state, today's date, recent history). 
 '''
-STATIC_INSTRUCTIONS = """
-You are a dental clinic appointment supervisor. Extract intent and fields from the user message.
-The model backing you is capable of reasoning — apply the rules below with judgment, not literal pattern-matching.
 
-# INTENT
-- book: user wants an appointment, even without a named doctor.
-- reschedule: ONLY when an existing appointment is already confirmed/booked (appointment ID or clear reference to a prior booking present). A date/time/doctor change to a booking still in progress (nothing confirmed yet) stays "book" even if phrased "instead"/"actually"/"can you make it" — don't infer reschedule from phrasing alone.
-- cancel: user wants to cancel; if they also want to rebook, set rebook_requested=true.
-- check_availability: asks about a doctor's availability or free slots.
-- knowledge: general clinic questions, follow-ups about an existing booking, or questions about the user's own known details (name/email/phone/doctor/time). Never null.
-- null: only if unrelated to the clinic AND nothing was already in progress.
-- CONTINUITY: a bare follow-up answer (name, phone, email, date, time, reason) keeps Previous State's intent — don't null it for lacking booking language.
-- ACTIVE APPOINTMENT: if Previous State appointment_id is set, any further change to its date/time/doctor — even vague ("another doctor", "someone else") — stays reschedule on that SAME appointment_id (clear_doctor=true if no name given). Switch to cancel only on an explicit cancellation word ("cancel", "cancel it", "scrap that").
+STATIC_INSTRUCTIONS = load_active_skill("supervisor")
 
-# DOCTOR NAME
-- Set doctor_name only from a name in the CURRENT message, or from a plain confirmation ("yes"/"ok"/"go ahead") when suggested_alternative is set — in that case doctor_name=suggested_alternative, suggested_alternative=null, and intent stays whatever it already was (book or reschedule; never force it to "book"). Never infer a name from history or the assistant's prior message.
-- Otherwise carry forward doctor_name from Previous State.
-- clear_doctor=true only for book/reschedule/cancel, when the user wants a different/unspecified doctor without naming one ("whoever's free", "doesn't matter"). Never true for knowledge/check_availability. A named doctor always beats clear_doctor.
-- "let's go with Dr X" → intent=book, doctor_name=Dr X, suggested_alternative=null.
-- A question about suggested_alternative ("does she specialize in X") → intent=knowledge, doctor_name=suggested_alternative.
-- Compound cancel+rebook needs an explicit cancellation word THIS turn ("cancel and book another doctor"). "Another doctor" alone, no cancellation word, is a reschedule doctor-change (see ACTIVE APPOINTMENT), not a cancellation.
-- A new date/time with no doctor mentioned keeps the existing doctor_name — don't switch to suggested_alternative on its own.
-
-# SPECIALIZATION
-Infer from reason_for_visit; output ONLY the exact label below, nothing appended — these are matched directly against the DB: Emergency Dentistry (urgent pain/trauma), Endodontics (root canal/infected tooth), General (checkup/cleaning/vague), Cosmetic (whitening/veneers/smile), Orthodontics (braces/aligners), Oral Surgery (wisdom tooth/extraction), Implantology (implants), Paediatric (child), Periodontics (gum disease), Prosthodontics (crowns/bridges/dentures), Dental Radiology (X-rays/imaging). Vague reason → General. No reason given → keep Previous State value.
-
-# DATE / TIME
-- Explicit calendar date → appointment_date=YYYY-MM-DD, relative_date_phrase=null.
-- Weekday / "next X" / "this X" / "today" / "tomorrow" → relative_date_phrase=verbatim phrase, appointment_date=null. Never compute the date yourself.
-- "same time/date/slot" → leave both null.
-- Times are HH:MM 24h.
-
-# OTHER
-- patient_name: current message only, never an email.
-- phone_number / invitee_email: current message, else keep Previous State.
-- appointment_id: only an explicit integer stated THIS turn, never inferred.
-- duration_minutes: from message if given, else Previous State, else 30.
-- Pronouns resolve to the most recently discussed doctor.
-"""
 
 DYNAMIC_CONTEXT_TEMPLATE = """
 # Previous State
@@ -198,8 +163,20 @@ _ANY_DOCTOR_PATTERN = re.compile(
     r"doesn'?t matter|don'?t (know|mind|care)|dont know|dunno|first available)\s*[!.]*\s*$",
     re.IGNORECASE,
 )
+
+_BOOKING_STATE_QUESTION_PATTERN = re.compile(
+    r"\b(am i|was i|did i|is my|do i have).{0,25}\b(book|booked|appointment|schedule|scheduled)\b",
+    re.IGNORECASE,
+)
 _DOCTOR_CHANGE_SIGNAL_PATTERN = re.compile(
     r"\b(another|different|someone else|switch|change (my |the )?doctor|new doctor)\b",
+    re.IGNORECASE,
+)
+
+_DOCTOR_PREFERENCE_SIGNAL_PATTERN = re.compile(
+    r"\b(experience[d]?|senior|junior|better|best|recommend(ed)?|expert|"
+    r"first (one|option|doctor)|second (one|option|doctor)|the other (one|doctor)|"
+    r"more (senior|junior|experienced)|less experienced|newer|older)\b",
     re.IGNORECASE,
 )
 
@@ -237,6 +214,39 @@ def _resolve_relative_date(phrase: str, today: date) -> str | None:
     return (today + timedelta(days=days_ahead)).isoformat()
 
 
+_TITLE_WORDS = {"dr", "dr.", "doctor"}
+
+
+def _doctor_mentioned_in_message(doctor_name: str, message: str) -> bool:
+    """Whether a doctor's name is actually referenced in the raw message
+    (full name, or any individual name component), rather than trusting the
+    model's own claim about who the patient picked. Used to guard against
+    the LLM silently attaching a doctor from earlier recommendations/history
+    to a message that never actually named one."""
+    if not doctor_name:
+        return False
+    msg_lower = message.lower()
+    name_lower = doctor_name.lower()
+    if name_lower in msg_lower:
+        return True
+    words = [w.strip(".,") for w in name_lower.split() if w.strip(".,") not in _TITLE_WORDS]
+    return any(len(w) >= 3 and w in msg_lower for w in words)
+
+
+_ECHO_CHECK_FIELDS = ("patient_name", "phone_number", "invitee_email")
+
+def _looks_like_echoed_history(value: str, current_message: str, history: list[dict]) -> bool:
+    if not value:
+        return False
+    normalized = value.strip().lower()
+    if normalized in current_message.strip().lower():
+        return False
+    return any(
+        msg.get("role") == "user" and (msg.get("content") or "").strip().lower() == normalized
+        for msg in history
+    )
+
+
 def _carry_forward(parsed: dict, field: str, prev_value):
     value = parsed.get(field)
     return value if value is not None else prev_value
@@ -270,6 +280,7 @@ async def supervisor_node(state: GraphState) -> dict:
             "invitee_email": state.invitee_email,
             "appointment_id": state.appointment_id,
             "suggested_alternative": None,
+            "recommended_doctors": [],
             "rebook_requested": False,
         }
 
@@ -283,6 +294,7 @@ async def supervisor_node(state: GraphState) -> dict:
             "appointment_date": None,
             "appointment_time": None,
             "suggested_alternative": None,
+            "recommended_doctors": [],
             "appointment_id": preserved_appointment_id,
             "duration_minutes": state.duration_minutes or 30,
             "patient_name": state.patient_name,
@@ -340,6 +352,35 @@ async def supervisor_node(state: GraphState) -> dict:
     parsed = parsed_output.model_dump()
     logger.info("Supervisor extracted: %s", parsed)
 
+    for field in _ECHO_CHECK_FIELDS:
+        value = parsed.get(field)
+        if value and _looks_like_echoed_history(value, state.user_message, state.history):
+            logger.warning(
+                "Discarding %s=%r — matches a prior raw user message verbatim, likely echoed from history rather than extracted from the current message.",
+                field, value,
+            )
+            parsed[field] = None
+
+    for field, value in parsed.items():
+        if isinstance(value, str) and value.strip().lower() == "null":
+            logger.warning(
+                "Discarding %s=%r — model output the literal string 'null' instead of an empty value.",
+                field, value,
+            )
+            parsed[field] = None
+
+
+    if parsed.get("intent") is None and _BOOKING_STATE_QUESTION_PATTERN.search(state.user_message):
+            logger.warning(
+                "Booking-status question classified as null intent — overriding to "
+                "'knowledge' so it's answered from real state, not a generated fallback_response. "
+                "message=%r", state.user_message,
+            )
+            parsed["intent"] = "knowledge"
+            parsed["fallback_response"] = None
+
+            
+
     if _REJECTION_PATTERN.match(state.user_message):
         logger.info("Detected explicit rejection (%r) — wiping proposal state.", state.user_message)
         preserved_appointment_id = state.appointment_id if state.intent == "reschedule" else None
@@ -373,8 +414,29 @@ async def supervisor_node(state: GraphState) -> dict:
         logger.info("Reschedule requested with no appointment_id yet — routing to scheduling to ask for it.")
 
     raw_doctor_name = parsed.get("doctor_name")
-    if raw_doctor_name is None and parsed.get("clear_doctor"):
-        raw_doctor_name = "CLEAR"
+    if parsed.get("clear_doctor"):
+        # Model schema says "never with doctor_name set", but in practice the
+        # model frequently sets clear_doctor=True AND echoes the currently
+        # pinned doctor into doctor_name anyway (e.g. "another doctor same
+        # time" -> doctor_name='Dr. Ananya Sharma', clear_doctor=True). The
+        # old code only treated clear_doctor as authoritative when
+        # doctor_name was None, so that echoed name silently won every time
+        # and the doctor was never actually cleared. Now: only let a
+        # doctor_name override clear_doctor if it's a genuine replacement
+        # actually named in this message; otherwise the clear wins.
+        if raw_doctor_name and _doctor_mentioned_in_message(raw_doctor_name, state.user_message):
+            logger.info(
+                "clear_doctor=True but %r is genuinely named in message %r — treating as a replacement pick, not a clear.",
+                raw_doctor_name, state.user_message,
+            )
+        else:
+            if raw_doctor_name:
+                logger.warning(
+                    "clear_doctor=True and doctor_name=%r was set but not actually mentioned in "
+                    "message %r — discarding the echoed name and honoring the clear.",
+                    raw_doctor_name, state.user_message,
+                )
+            raw_doctor_name = "CLEAR"
 
     if (
         raw_doctor_name is None
@@ -383,6 +445,49 @@ async def supervisor_node(state: GraphState) -> dict:
     ):
         logger.info("Detected 'any doctor' phrasing — routing through CLEAR sentinel.")
         raw_doctor_name = "CLEAR"
+
+    # ------------------------------------------------------------------
+    # AMBIGUOUS-RECOMMENDATION GUARD
+    #
+    # When booking_agent has just presented 2+ candidate doctors
+    # (state.recommended_doctors) and none has been pinned yet, the model
+    # sometimes fills doctor_name anyway — despite its own field
+    # instruction to extract "THIS message only, never from history" — by
+    # picking one of the recommended names off the top of its head. E.g.
+    # "I am free on Wednesday" (no doctor mentioned at all) was parsed
+    # with doctor_name="Dr. Ananya Sharma" simply because she was listed
+    # first among two doctors both available that day. That silently
+    # commits the patient to a doctor they never actually chose, skipping
+    # the "who would you prefer?" step entirely.
+    #
+    # Guard: if a doctor_name was extracted but isn't literally referenced
+    # anywhere in the raw user message, and multiple candidates are still
+    # in play, discard it — UNLESS the message contains a genuine
+    # comparative/preference signal (e.g. "the more experienced doctor",
+    # "the senior one"). That phrasing is a real, groundable coreference
+    # to whichever candidate the assistant itself already distinguished by
+    # that trait in its previous turn (e.g. "Dr. Sharma has 12 years of
+    # experience...") — not a hallucination — so the model's resolution is
+    # trusted there. Without this carve-out, a patient who answers a
+    # legitimate "who's better?" follow-up with "I'll take the more
+    # experienced one" gets stuck in an infinite "who would you prefer?"
+    # loop, since they never literally say the doctor's name.
+    # ------------------------------------------------------------------
+    if (
+        raw_doctor_name
+        and raw_doctor_name != "CLEAR"
+        and len(state.recommended_doctors) > 1
+        and not _doctor_mentioned_in_message(raw_doctor_name, state.user_message)
+        and not _DOCTOR_PREFERENCE_SIGNAL_PATTERN.search(state.user_message)
+    ):
+        logger.warning(
+            "Discarding hallucinated doctor_name=%r — not mentioned in message %r, "
+            "and %d candidates (%s) are still unresolved. Leaving doctor unpicked "
+            "so the patient is asked to choose explicitly.",
+            raw_doctor_name, state.user_message, len(state.recommended_doctors),
+            state.recommended_doctors,
+        )
+        raw_doctor_name = None
 
     if raw_doctor_name == "CLEAR":
         if resolved_intent in _CLEAR_ALLOWED_INTENTS:
@@ -430,32 +535,105 @@ async def supervisor_node(state: GraphState) -> dict:
     rebook_requested = bool(parsed.get("rebook_requested", False))
 
     relative_phrase = parsed.get("relative_date_phrase")
-    resolved_relative_date = _resolve_relative_date(relative_phrase, today_date) if relative_phrase else None
-    if resolved_relative_date:
-        resolved_appointment_date = resolved_relative_date
-    else:
-        resolved_appointment_date = _carry_forward(parsed, "appointment_date", state.appointment_date)
 
     weekday_phrase = _extract_weekday_phrase(state.user_message)
     has_explicit_date_signal = bool(
         _EXPLICIT_DATE_PATTERN.search(state.user_message)
     ) or bool(_MONTH_NAME_DATE_PATTERN.search(state.user_message))
-    if weekday_phrase and not has_explicit_date_signal and not resolved_relative_date:
+
+    # ------------------------------------------------------------------
+    # DATE RESOLUTION — this is the part that was producing wrong dates.
+    #
+    # The model is told (see SupervisorOutput.appointment_date docstring)
+    # to leave appointment_date null whenever it fills relative_date_phrase
+    # instead. In practice it doesn't always follow that: it sometimes
+    # fills BOTH, and its own raw appointment_date guess is frequently
+    # wrong (LLMs are unreliable at day-of-week arithmetic). When that
+    # raw, wrong value leaks through — via this field or a later
+    # carry-forward — a user asking for "Monday" can end up with a
+    # Saturday's date silently substituted, which then either books the
+    # wrong day outright or gets rejected by the availability check for
+    # a day the user never actually asked about, both very confusing.
+    #
+    # Fix has three parts:
+    #   1. UNPROMPTED DATE GUARD (new): if the CURRENT message has no date
+    #      reference at all — no weekday word, no explicit date, no
+    #      relative phrase — but the model still emits a raw
+    #      appointment_date anyway, that's a hallucinated guess, not an
+    #      intentional update. E.g. "1 PM" (just a time) got parsed with
+    #      appointment_date='2026-07-20' out of nowhere, and because
+    #      carry-forward treats any non-null model value as authoritative,
+    #      it silently clobbered an already-correct carried-forward date
+    #      from an earlier turn. Mirrors the doctor_name hallucination
+    #      guard above — discard it so carry-forward keeps the old value.
+    #   2. If the model filled both appointment_date and relative_date_phrase,
+    #      the raw appointment_date is discarded outright — the phrase
+    #      (deterministically resolved) is authoritative, never the
+    #      model's own date math.
+    #   3. A final, UNCONDITIONAL sanity check below cross-verifies the
+    #      resolved date's actual weekday against any weekday word found
+    #      in the raw message, regardless of which path produced the
+    #      date — this is a safety net that catches drift from any
+    #      source, not just "the phrase resolver returned nothing".
+    # ------------------------------------------------------------------
+    if (
+        parsed.get("appointment_date")
+        and not relative_phrase
+        and not weekday_phrase
+        and not has_explicit_date_signal
+        and parsed.get("appointment_date") != state.appointment_date
+    ):
+        logger.warning(
+            "Discarding unprompted appointment_date=%r — message %r has no date "
+            "reference at all; keeping carried-forward date=%r.",
+            parsed.get("appointment_date"), state.user_message, state.appointment_date,
+        )
+        parsed["appointment_date"] = None
+
+    if relative_phrase and parsed.get("appointment_date"):
+        logger.warning(
+            "Model set BOTH appointment_date=%r and relative_date_phrase=%r for "
+            "message %r — discarding the raw appointment_date; only the "
+            "deterministic resolution of the phrase will be used.",
+            parsed.get("appointment_date"), relative_phrase, state.user_message,
+        )
+        parsed["appointment_date"] = None
+
+    resolved_relative_date = _resolve_relative_date(relative_phrase, today_date) if relative_phrase else None
+
+    logger.info(
+        "Date resolution: relative_phrase=%r today=%s -> resolved=%r (model's own raw appointment_date=%r)",
+        relative_phrase, today_date.isoformat(), resolved_relative_date, parsed.get("appointment_date"),
+        )
+    if resolved_relative_date:
+        resolved_appointment_date = resolved_relative_date
+    else:
+        resolved_appointment_date = _carry_forward(parsed, "appointment_date", state.appointment_date)
+
+    if weekday_phrase and not has_explicit_date_signal:
         corrected_date = _resolve_relative_date(weekday_phrase, today_date)
         if corrected_date and corrected_date != resolved_appointment_date:
             logger.warning(
-                "Overriding model-computed appointment_date %r with deterministic "
-                "resolution %r for weekday phrase %r found in message %r.",
-                resolved_appointment_date, corrected_date, weekday_phrase, state.user_message,
+                "Weekday consistency check failed: resolved_appointment_date=%r does not "
+                "match weekday phrase %r found in message %r. Overriding with deterministic "
+                "resolution %r.",
+                resolved_appointment_date, weekday_phrase, state.user_message, corrected_date,
             )
             resolved_appointment_date = corrected_date
-
 
     new_date_given_this_turn = bool(resolved_relative_date) or parsed.get("appointment_date") is not None
     if new_date_given_this_turn:
         resolved_appointment_time = parsed.get("appointment_time")
     else:
         resolved_appointment_time = _carry_forward(parsed, "appointment_time", state.appointment_time)
+
+    # A doctor decision was actually made/changed this turn -> the old
+    # candidate list no longer represents an open question, clear it.
+    # Otherwise (still no doctor pinned, or unchanged) keep it so the
+    # ambiguous-recommendation guard above has something to check next turn.
+    resolved_recommended_doctors = (
+        [] if resolved_doctor_name != state.doctor_name else state.recommended_doctors
+    )
 
     result = {
         "intent": resolved_intent,
@@ -470,11 +648,12 @@ async def supervisor_node(state: GraphState) -> dict:
         "invitee_email": parsed.get("invitee_email") or state.invitee_email,
         "appointment_id": resolved_appointment_id,
         "suggested_alternative": resolved_suggested_alternative,
+        "recommended_doctors": resolved_recommended_doctors,
         "rebook_requested": rebook_requested,
     }
 
-    if resolved_intent is None:
-        fallback_response = parsed.get("fallback_response ")
+    if parsed.get("intent") is None:
+        fallback_response = parsed.get("fallback_response")
         if fallback_response:
             result["response_message"] = fallback_response
 

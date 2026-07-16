@@ -104,13 +104,29 @@ async def _recommend_doctors_response(state: GraphState) -> str:
             for d in doctors_to_show
         )
 
+    # Every doctor that reaches this point already matches the patient's
+    # reason for visit (and, if a slot was given, is free at it) — so all of
+    # them are genuinely relevant options. Previously the prompt told the
+    # model to "mention a second specialist only if clearly relevant", which
+    # caused it to silently drop the second (or third) matching doctor from
+    # its reply even though the patient had no way of knowing others
+    # existed. Now we explicitly require every name in doctors_to_show to be
+    # mentioned, and ask the patient to choose when there's more than one.
+    doctor_count = len(doctors_to_show)
+    if doctor_count > 1:
+        mention_instruction = (
+            f"There are {doctor_count} matching doctors — mention EVERY one of them by name "
+            f"(do not omit any), with a brief note on what distinguishes each, so the patient can choose."
+        )
+    else:
+        mention_instruction = "Mention the doctor by name and briefly say why they're a good fit."
+
     prompt = (
         f"You are a warm dental clinic receptionist. The patient's reason: '{state.reason_for_visit}'.\n"
         f"Matching doctors:\n{context}\n\n"
         f"{'Specific slot requested: ' + state.appointment_date + ' at ' + state.appointment_time + '.' if has_slot else 'No date/time given yet.'}\n\n"
-        f"Respond naturally in 2-3 sentences: lead with the single best doctor for this reason and why, "
-        f"mention a second specialist only if clearly relevant. "
-        f"{'Confirm who is free at that slot.' if has_slot else 'End by asking when works best for the patient.'} "
+        f"Respond naturally in 2-4 sentences. {mention_instruction} "
+        f"{'Confirm who is free at that slot and ask the patient to pick if more than one.' if has_slot else 'End by asking when works best for the patient.'} "
         f"No bullet points, no numbering, no jargon."
     )
 
@@ -282,12 +298,17 @@ async def booking_node(state: GraphState) -> dict:
     logger.info("Email result: %s", email_result)
 
     return {
-        "response_message": (
-            f"You're all set! Your appointment with {state.doctor_name} is confirmed for "
-            f"{state.appointment_date} at {state.appointment_time} (appointment ID: {appointment_id}). "
-            f"A confirmation email has been sent to {state.invitee_email}."
-        ),
-        "appointment_id": appointment_id,
-        "suggested_alternative": None,
-        "intent": None,
-    }
+            "response_message": (
+                f"You're all set! Your appointment with {state.doctor_name} is confirmed for "
+                f"{state.appointment_date} at {state.appointment_time} (appointment ID: {appointment_id}). "
+                f"A confirmation email has been sent to {state.invitee_email}."
+            ),
+            "appointment_id": appointment_id,
+            "suggested_alternative": None,
+            "intent": None,
+            "doctor_name": None,
+            "appointment_date": None,
+            "appointment_time": None,
+            "reason_for_visit": None,
+            "specialization_needed": None,
+        }
